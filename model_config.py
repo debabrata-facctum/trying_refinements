@@ -20,31 +20,34 @@ import os
 # Context window sizing
 # ---------------------------------------------------------------------------
 #
-# Context window directly impacts RAM usage. Rough rule of thumb for
-# quantized models (Q4_K_M):
-#   ~1 MB per 512 tokens of context
-#   so 2048 ctx ≈ 4 MB, 4096 ctx ≈ 8 MB, 8192 ctx ≈ 16 MB
+# Context window RAM cost is TINY compared to model weights:
+#   - 7B Q4 model weights ≈ 4 GB
+#   - 2048 ctx window     ≈ 4 MB   (0.1% of weights)
+#   - 4096 ctx window     ≈ 8 MB
+#   - 8192 ctx window     ≈ 16 MB
 #
-# The model weights themselves are the big cost (e.g. 7B Q4 ≈ 4 GB).
-# Context is small relative to weights, but on low-RAM machines every
-# bit counts.
+# So context sizing should be based on TOTAL memory (can the model
+# even fit?) not available memory. If the model is loaded, the extra
+# cost of a bigger context window is negligible.
 #
-# We size context based on recommended_memory_gb (the safe limit that
-# accounts for what's actually free right now).
+# 512 tokens is too small for any real conversation — two exchanges
+# fill it up and the model loses history. 2048 is the practical
+# minimum for a usable chat experience.
 
 _CTX_TIERS = [
-    # (min_recommended_gb, context_size)
-    (6.0,  8192),   # plenty of headroom
-    (4.0,  4096),   # comfortable
-    (2.0,  2048),   # tight but workable
-    (0.0,   512),   # survival mode
+    # (min_total_ram_gb, context_size)
+    (32.0, 8192),   # large machines — full context
+    (16.0, 4096),   # comfortable
+    (8.0,  2048),   # tight but usable for chat
+    (4.0,  1024),   # very constrained
+    (0.0,   512),   # survival mode (barely usable)
 ]
 
 
-def _pick_context_size(recommended_gb):
-    """Pick context window size based on available memory budget."""
+def _pick_context_size(total_ram_gb):
+    """Pick context window size based on total system RAM."""
     for min_gb, ctx in _CTX_TIERS:
-        if recommended_gb >= min_gb:
+        if total_ram_gb >= min_gb:
             return ctx
     return 512
 
@@ -85,12 +88,14 @@ def _pick_context_size(recommended_gb):
 # Setting n_gpu_layers = -1 means "offload everything" in llama-cpp.
 
 _GPU_LAYER_TIERS_UNIFIED = [
-    # (min_recommended_gb, n_gpu_layers)
-    # Unified memory (Apple Silicon) — can be aggressive
-    (6.0,  -1),    # offload all layers
-    (4.0,   24),   # most layers
-    (2.0,   12),   # partial offload
-    (0.0,    0),   # too tight, CPU only
+    # (min_total_ram_gb, n_gpu_layers)
+    # Unified memory (Apple Silicon) — GPU offloading doesn't cost
+    # extra RAM, it just moves work to faster GPU cores. The only
+    # question is whether the model fits in RAM at all.
+    # If the model is loaded, offloading to GPU is always a win.
+    (8.0,  -1),    # 8 GB+ → offload everything
+    (4.0,  -1),    # 4 GB+ → still offload all (small models only)
+    (0.0,    0),   # below 4 GB → model probably can't load anyway
 ]
 
 _GPU_LAYER_TIERS_DISCRETE = [
@@ -104,22 +109,22 @@ _GPU_LAYER_TIERS_DISCRETE = [
 ]
 
 
-def _pick_gpu_layers(profile):
-    """Pick n_gpu_layers based on GPU type and available memory."""
+def _pick_gpu_layers(profile, total_ram_gb):
+    """Pick n_gpu_layers based on GPU type and memory."""
     if not profile.get("use_gpu"):
         return 0
 
     accel = profile.get("acceleration_mode", "CPU_ONLY")
 
     if accel == "METAL_ACCELERATED":
-        # Unified memory — use recommended_memory_gb as the budget
-        budget = profile.get("recommended_memory_gb", 0)
+        # Unified memory — GPU doesn't use separate VRAM.
+        # Use total RAM to decide: if the model fits, offload all.
         for min_gb, layers in _GPU_LAYER_TIERS_UNIFIED:
-            if budget >= min_gb:
+            if total_ram_gb >= min_gb:
                 return layers
 
     elif accel == "CUDA_ACCELERATED":
-        # Discrete VRAM — use gpu_memory_gb
+        # Discrete VRAM — use gpu_memory_gb (separate from system RAM)
         vram = profile.get("gpu_memory_gb", 0)
         for min_gb, layers in _GPU_LAYER_TIERS_DISCRETE:
             if vram >= min_gb:
@@ -147,12 +152,13 @@ def build_model_config(hw_config):
     cpu = hw_config.get("cpu", {})
     ram = hw_config.get("ram", {})
 
+    total_ram_gb = ram.get("total_gb", 4.0)
     recommended_gb = profile.get("recommended_memory_gb",
                                  profile.get("memory_limit_gb", 4.0))
 
-    n_ctx = _pick_context_size(recommended_gb)
+    n_ctx = _pick_context_size(total_ram_gb)
     n_threads = profile.get("compute_threads", max(1, (cpu.get("physical_cores") or 2) - 1))
-    n_gpu_layers = _pick_gpu_layers(profile)
+    n_gpu_layers = _pick_gpu_layers(profile, total_ram_gb)
 
     return {
         "n_ctx": n_ctx,
@@ -160,7 +166,7 @@ def build_model_config(hw_config):
         "n_gpu_layers": n_gpu_layers,
         "reasoning": {
             "n_ctx": (
-                f"recommended_memory={recommended_gb} GB -> "
+                f"total_ram={total_ram_gb} GB -> "
                 f"context window={n_ctx} tokens"
             ),
             "n_threads": (
@@ -170,7 +176,7 @@ def build_model_config(hw_config):
             ),
             "n_gpu_layers": (
                 f"acceleration={profile.get('acceleration_mode', 'CPU_ONLY')}, "
-                f"gpu_memory={profile.get('gpu_memory_gb', 0)} GB -> "
+                f"total_ram={total_ram_gb} GB -> "
                 f"{n_gpu_layers} layers offloaded"
                 + (" (all)" if n_gpu_layers == -1 else "")
             ),
