@@ -28,16 +28,13 @@ async def log_requests(request: Request, call_next):
     print(f"DEBUG: Response status: {response.status_code}")
     return response
 
-# Configuration
-# IMPORTANT: Update this path to your local .gguf model file
-MODEL_PATH = r"C:\llama\models\mistral-7b-instruct-v0.2.Q4_K_M.gguf"
-
+# Configuration — no hardcoded model path; users pick via the UI
 # Global model instance
 llm = None
 
 # Model state tracking
 model_state = {
-    "model_path": MODEL_PATH,
+    "model_path": "",
     "n_ctx": 2048,
     "n_threads": 10,
     "n_gpu_layers": 20,
@@ -49,8 +46,13 @@ def load_model(path=None, n_ctx=2048, n_threads=10, n_gpu_layers=20):
     global llm, model_state
     target_path = path or model_state["model_path"]
 
+    if not target_path:
+        print("WARNING: No model path configured. Use the Settings UI to pick a model.")
+        model_state["status"] = "not_loaded"
+        return None
+
     if not os.path.exists(target_path):
-        print(f"WARNING: Model not found at {target_path}. Please update MODEL_PATH in server.py")
+        print(f"WARNING: Model not found at {target_path}")
         model_state["status"] = "error"
         return None
 
@@ -226,8 +228,11 @@ async def chat(chat_request: ChatRequest):
     if llm is None:
         load_model()
         if llm is None:
-            print("ERROR: Model failed to load")
-            raise HTTPException(status_code=500, detail="Model not configured or not found. Check server.py")
+            print("ERROR: No model loaded")
+            raise HTTPException(
+                status_code=503,
+                detail="No model loaded. Please open Settings and use 'Pick Model' to select a .gguf file, then click 'Load Model'."
+            )
 
     # Process messages to handle system prompts and ensure validity
     raw_messages = [m.model_dump() for m in chat_request.messages]
@@ -320,5 +325,5 @@ async def serve_static(file_path: str):
 
 if __name__ == "__main__":
     print(f"Starting server on http://localhost:8080")
-    print(f"Please ensure your model file exists at: {MODEL_PATH}")
+    print(f"Open the Settings panel in the UI to pick and load a model file.")
     uvicorn.run(app, host="0.0.0.0", port=8080)
