@@ -4,19 +4,38 @@ A private, local chat interface for running GGUF language models on your own mac
 
 Built with **FastAPI** + **llama-cpp-python** on the backend and a clean dark-themed frontend.
 
-![UI Preview](https://img.shields.io/badge/status-active-brightgreen) ![Python](https://img.shields.io/badge/python-3.10%2B-blue) ![License](https://img.shields.io/badge/license-MIT-green)
+![UI Preview](https://img.shields.io/badge/status-active-brightgreen) ![Python](https://img.shields.io/badge/python-3.10%2B-blue) ![License](https://img.shields.io/badge/license-GPLv3-blue)
 
 ---
 
 ## Why This Exists
 
-Most local LLM tools either require complex setup (Ollama, text-generation-webui) or force you to use a terminal. LocalMind is a single `python server.py` that gives you a ChatGPT-style UI talking to a model running on your hardware.
+Most local LLM tools (Ollama, text-generation-webui, LM Studio) hide the model configuration behind abstractions. You get a chat box, but no direct control over how the model actually runs on your hardware. LocalMind gives you that control.
 
-Key design choices:
-- **No hardcoded model path** — pick any `.gguf` file through a built-in file browser in the UI
-- **Hot-swappable models** — load a different model without restarting the server
-- **Streaming responses** — tokens appear as they're generated, not after a 30-second wait
-- **Zero external accounts** — everything runs on `localhost`
+**The core idea:** a lightweight chat UI where you explicitly configure the inference parameters — context length, CPU thread allocation, GPU layer offloading — and see the effect immediately. No guessing, no hidden defaults, no restarting.
+
+### What makes this different
+
+| Feature | Ollama / LM Studio | LocalMind |
+|---------|--------------------:|----------:|
+| Context window control | Hidden or limited | You set `n_ctx` directly (128 → 8192+) |
+| Thread allocation | Automatic (opaque) | You choose exactly how many CPU threads to dedicate |
+| GPU layer offloading | All-or-nothing | Fine-grained: 0 (CPU only), partial, or -1 (offload all) |
+| Model loading | Restart required | Hot-swap from the UI, no server restart |
+| Configuration | Config files / CLI flags | Visual settings panel with immediate feedback |
+
+**Quick primer on these parameters:**
+
+- **Context window (`n_ctx`)** — how many tokens the model can hold in memory at once. Your messages, the conversation history, and the model's response all share this space. Bigger = longer conversations, but uses more RAM.
+- **Threads (`n_threads`)** — how many CPU cores to throw at inference. More threads = faster responses, but only up to your physical core count. Going higher actually hurts performance.
+- **GPU layers (`n_gpu_layers`)** — a model is a stack of transformer layers. This controls how many run on GPU vs CPU. Set to `0` for CPU-only, set to `-1` to offload everything to GPU, or pick a number in between based on how much VRAM you have.
+
+The point: you see exactly what's happening and can tune it for your specific machine — whether that's a MacBook Air with 8 GB or a desktop with a 12 GB GPU.
+
+This matters if you're:
+- Running on constrained hardware and need to tune for your specific machine
+- Learning how LLM inference parameters affect speed and quality
+- Want a minimal, transparent setup with no magic
 
 ---
 
@@ -128,17 +147,57 @@ The frontend renders markdown in real-time using `marked.js` and syntax-highligh
 
 ## Settings & Parameters
 
-All configurable from the Settings modal in the UI:
+All configurable from the Settings modal in the UI. Settings persist in `localStorage` — they survive page refreshes.
 
-| Parameter | What it does | Default | Guidance |
-|-----------|-------------|---------|----------|
-| **Model Path** | Path to your `.gguf` file | — | Use the file browser |
-| **n_ctx** | Context window (tokens) | 2048 | Higher = more conversation memory, more RAM |
-| **n_threads** | CPU threads for inference | 10 | Set to your physical core count minus 1 |
-| **n_gpu_layers** | Layers offloaded to GPU | 20 | Set to 0 if no GPU; -1 to offload everything |
-| **System Prompt** | Instructions for the model | "You are a helpful AI assistant." | Customize personality/behavior |
+| Parameter | Default | Range |
+|-----------|---------|-------|
+| **Model Path** | — | Any `.gguf` file on your system |
+| **n_ctx** | 2048 | 128 – 8192+ |
+| **n_threads** | 6 | 1 – your core count |
+| **n_gpu_layers** | 20 | 0, 1–99, or -1 |
+| **System Prompt** | "You are a helpful AI assistant." | Any text |
 
-Settings persist in `localStorage` — they survive page refreshes.
+### Understanding the parameters
+
+**`n_ctx` — Context Window**
+
+This is how many tokens (roughly words) the model can "see" at once — your message, the conversation history, and its own response all share this budget. A 7B model with `n_ctx=2048` uses about 4 MB of extra RAM for context; bumping to 8192 costs ~16 MB more. The real cost is the model weights (~4 GB for a Q4 7B model), so context size is cheap to increase if you have the RAM.
+
+- `2048` — good default, handles ~3-4 back-and-forth exchanges
+- `4096` — comfortable for longer conversations
+- `8192` — full context, useful for document analysis or long chats
+- Below `1024` — the model loses track of the conversation very quickly
+
+**`n_threads` — CPU Thread Allocation**
+
+How many CPU threads `llama-cpp-python` uses for the heavy matrix math during inference. More threads = faster token generation, but only up to your physical core count. Going beyond that causes thread contention and actually slows things down.
+
+Rule of thumb: **physical cores minus 1** (leave one for the OS and the server itself).
+
+- 4-core machine → set to 3
+- 6-core machine → set to 5
+- 8-core machine → set to 6–7
+
+> Note: use *physical* cores, not logical (hyperthreaded) cores. Hyperthreads don't help much for this workload.
+
+**`n_gpu_layers` — GPU Offloading**
+
+A transformer model is made of stacked layers (a 7B model typically has 32). This parameter controls how many of those layers run on your GPU instead of CPU. More layers on GPU = dramatically faster inference.
+
+| Value | Meaning |
+|-------|---------|
+| `0` | CPU only — works everywhere, slowest |
+| `10–20` | Partial offload — good if your GPU has limited VRAM |
+| `32+` | Full offload for that model size |
+| **`-1`** | **Offload ALL layers to GPU** — fastest, requires enough VRAM |
+
+Guidelines:
+- **No GPU or unsure?** → set to `0`
+- **NVIDIA with 4 GB VRAM** → try `20` for a 7B Q4 model
+- **NVIDIA with 8+ GB VRAM** → set to `-1` (offload everything)
+- **Apple Silicon (M1/M2/M3)** → set to `-1` (unified memory, GPU offload is always a win)
+
+If you set it too high for your VRAM, the server will crash on model load. Just lower the value and try again.
 
 ---
 
@@ -224,14 +283,14 @@ Set **GPU Layers** to `0` in Settings. This forces CPU-only inference — slower
 
 ## Roadmap
 
-See [REFINEMENTS.md](./REFINEMENTS.md) for the full list. Highlights:
-
-- [ ] Conversation persistence with SQLite (multi-chat sidebar)
-- [ ] Server-side history trimming (prevent silent context overflow)
-- [ ] Bundle JS dependencies for true offline use
-- [ ] Hardware auto-detection for optimal default parameters
-- [ ] `max_tokens` control for response length
-- [ ] Proper logging (replace debug prints)
+- Conversation persistence with SQLite (multi-chat sidebar, "New Chat" button)
+- Server-side history trimming — automatically drop old messages so the model never hits a silent context overflow
+- Bundle JS dependencies locally for true offline use (no CDN needed)
+- Hardware auto-detection — suggest optimal `n_threads` and `n_gpu_layers` on startup
+- `max_tokens` control — let users cap response length from the UI
+- Proper structured logging (replace debug prints with Python `logging`)
+- Path traversal protection on static file serving
+- Pin dependency versions for reproducible installs
 
 ---
 
@@ -242,10 +301,10 @@ See [REFINEMENTS.md](./REFINEMENTS.md) for the full list. Highlights:
 3. Commit your changes
 4. Push and open a Pull Request
 
-Anything marked 🔴 in [REFINEMENTS.md](./REFINEMENTS.md) is fair game.
-
 ---
 
 ## License
 
-MIT
+This project is licensed under the [GNU General Public License v3.0](./LICENSE).
+
+You're free to use, modify, and distribute this software — but any derivative work must also be open-sourced under the same license.
