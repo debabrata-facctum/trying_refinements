@@ -89,28 +89,34 @@
                         placeholder="You are a helpful assistant.">You are a helpful AI assistant.</textarea>
                 </div>
 
+                <hr style="border-color: var(--border-color); margin: 10px 0;">
+                <h3 style="font-size: 1rem; font-weight: 500; color: var(--text-primary);">Model Configuration</h3>
+
                 <div class="form-group">
                     <label for="model-path-input">Model Path</label>
-                    <div class="input-row">
-                        <input type="text" id="model-path-input" readonly placeholder="No model selected...">
-                        <button id="pick-model-btn" class="secondary-btn">Pick Model</button>
+                    <div style="display: flex; gap: 8px;">
+                        <input type="text" id="model-path-input" placeholder="Path to .gguf model file" style="flex: 1;">
+                        <button id="pick-model-btn" class="primary-btn" style="padding: 8px 12px; white-space: nowrap;">Pick Model</button>
                     </div>
                 </div>
                 <div class="form-group">
                     <label for="n-ctx-input">Context Window (n_ctx)</label>
-                    <input type="number" id="n-ctx-input" value="2048" min="128" step="128">
+                    <input type="number" id="n-ctx-input" value="2048" min="128" max="32768">
+                    <small>Tokens the model can see at once. Higher = more RAM.</small>
                 </div>
                 <div class="form-group">
-                    <label for="n-threads-input">Threads (n_threads)</label>
-                    <input type="number" id="n-threads-input" value="10" min="1" step="1">
+                    <label for="n-threads-input">CPU Threads (n_threads)</label>
+                    <input type="number" id="n-threads-input" value="6" min="1" max="64">
+                    <small>Set to physical cores minus 1 for best performance.</small>
                 </div>
                 <div class="form-group">
                     <label for="n-gpu-layers-input">GPU Layers (n_gpu_layers)</label>
-                    <input type="number" id="n-gpu-layers-input" value="20" min="0" step="1">
+                    <input type="number" id="n-gpu-layers-input" value="20" min="-1" max="999">
+                    <small>0 = CPU only, -1 = offload all to GPU.</small>
                 </div>
                 <div class="form-group">
-                    <button id="load-model-btn" class="primary-btn">Load Model</button>
-                    <p id="model-status-text" class="model-status">No model loaded</p>
+                    <button id="load-model-btn" class="primary-btn" style="width: 100%;">Load Model</button>
+                    <small id="model-status-text" class="model-status">No model loaded</small>
                 </div>
             </div>
             <div class="modal-footer">
@@ -120,8 +126,9 @@
         </div>
     </div>
 
+    <!-- File Browser Modal -->
     <div class="modal-overlay" id="file-browser-modal">
-        <div class="modal file-browser">
+        <div class="modal" style="max-width: 600px; max-height: 80vh; display: flex; flex-direction: column;">
             <div class="modal-header">
                 <h2>Select Model File</h2>
                 <button class="close-btn" id="close-browser-btn">
@@ -132,12 +139,14 @@
                     </svg>
                 </button>
             </div>
-            <div class="browser-nav">
-                <button id="browser-go-up-btn" class="secondary-btn">⬆ Go Up</button>
-                <span id="browser-current-path" class="browser-path">/</span>
-            </div>
-            <div class="browser-list" id="browser-entries">
-                <!-- Directory and file entries will be populated here -->
+            <div class="modal-body" style="flex: 1; overflow: hidden; padding: 10px 20px;">
+                <div style="display: flex; align-items: center; gap: 8px; margin-bottom: 10px;">
+                    <button id="browser-go-up-btn" class="secondary-btn" style="padding: 6px 10px; margin-right: 0;">⬆ Up</button>
+                    <span id="browser-current-path" style="font-size: 0.85rem; color: var(--text-secondary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">/</span>
+                </div>
+                <div id="browser-entries" style="overflow-y: auto; max-height: 50vh; border: 1px solid var(--border-color); border-radius: 6px; padding: 8px;">
+                    <!-- Entries will be rendered here -->
+                </div>
             </div>
         </div>
     </div>

@@ -28,7 +28,6 @@ async def log_requests(request: Request, call_next):
     print(f"DEBUG: Response status: {response.status_code}")
     return response
 
-# Configuration — no hardcoded model path; users pick via the UI
 # Global model instance
 llm = None
 
@@ -36,23 +35,18 @@ llm = None
 model_state = {
     "model_path": "",
     "n_ctx": 2048,
-    "n_threads": 10,
+    "n_threads": 6,
     "n_gpu_layers": 20,
     "status": "not_loaded"
 }
 
 
-def load_model(path=None, n_ctx=2048, n_threads=10, n_gpu_layers=20):
+def load_model(path=None, n_ctx=2048, n_threads=6, n_gpu_layers=20):
     global llm, model_state
     target_path = path or model_state["model_path"]
 
-    if not target_path:
-        print("WARNING: No model path configured. Use the Settings UI to pick a model.")
-        model_state["status"] = "not_loaded"
-        return None
-
     if not os.path.exists(target_path):
-        print(f"WARNING: Model not found at {target_path}")
+        print(f"WARNING: Model not found at {target_path}. Please update MODEL_PATH in server.py")
         model_state["status"] = "error"
         return None
 
@@ -98,7 +92,7 @@ class ChatRequest(BaseModel):
 class LoadModelRequest(BaseModel):
     model_path: str
     n_ctx: int = 2048
-    n_threads: int = 10
+    n_threads: int = 6
     n_gpu_layers: int = 20
 
 class BrowseEntry(BaseModel):
@@ -228,11 +222,8 @@ async def chat(chat_request: ChatRequest):
     if llm is None:
         load_model()
         if llm is None:
-            print("ERROR: No model loaded")
-            raise HTTPException(
-                status_code=503,
-                detail="No model loaded. Please open Settings and use 'Pick Model' to select a .gguf file, then click 'Load Model'."
-            )
+            print("ERROR: Model failed to load")
+            raise HTTPException(status_code=500, detail="Model not configured or not found. Check server.py")
 
     # Process messages to handle system prompts and ensure validity
     raw_messages = [m.model_dump() for m in chat_request.messages]
@@ -317,13 +308,26 @@ async def serve_index():
 
 @app.get("/{file_path:path}")
 async def serve_static(file_path: str):
-    # This serves script.js, style.css, etc.
-    if os.path.exists(file_path) and os.path.isfile(file_path):
-        return FileResponse(file_path)
+    # Only serve files from the same directory as server.py
+    ALLOWED_EXTENSIONS = {".js", ".css", ".html", ".ico", ".png", ".svg"}
+    base_dir = os.path.abspath(os.path.dirname(__file__))
+    requested = os.path.abspath(os.path.join(base_dir, file_path))
+
+    # Block path traversal: file must be inside base_dir
+    if not requested.startswith(base_dir):
+        raise HTTPException(status_code=403, detail="Access denied")
+
+    ext = os.path.splitext(requested)[1].lower()
+    if ext not in ALLOWED_EXTENSIONS:
+        raise HTTPException(status_code=403, detail="File type not allowed")
+
+    if os.path.exists(requested) and os.path.isfile(requested):
+        return FileResponse(requested)
+
     print(f"DEBUG: File not found: {file_path}")
     raise HTTPException(status_code=404)
 
 if __name__ == "__main__":
-    print(f"Starting server on http://localhost:8080")
-    print(f"Open the Settings panel in the UI to pick and load a model file.")
+    print("Starting LocalMind server on http://localhost:8080")
+    print("Open the browser and load a model from Settings.")
     uvicorn.run(app, host="0.0.0.0", port=8080)

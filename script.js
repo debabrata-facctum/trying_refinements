@@ -29,10 +29,9 @@ document.addEventListener('DOMContentLoaded', () => {
     const browserGoUpBtn = document.getElementById('browser-go-up-btn');
     const closeBrowserBtn = document.getElementById('close-browser-btn');
 
-    // Global Error Catcher for Browser Console issues
+    // Global Error Catcher — log to console only, don't pollute the chat
     window.onerror = function (msg, url, lineNo, columnNo, error) {
         console.error('Window Error:', msg, 'at', url, ':', lineNo);
-        addMessage(`**Browser Error:** ${msg}. Check console for details.`, 'assistant');
         return false;
     };
 
@@ -55,7 +54,7 @@ document.addEventListener('DOMContentLoaded', () => {
     // Model settings state with localStorage persistence
     let modelPath = localStorage.getItem('modelPath') || '';
     let nCtx = parseInt(localStorage.getItem('nCtx')) || 2048;
-    let nThreads = parseInt(localStorage.getItem('nThreads')) || 10;
+    let nThreads = parseInt(localStorage.getItem('nThreads')) || 6;
     let nGpuLayers = parseInt(localStorage.getItem('nGpuLayers')) || 20;
 
     // File browser state
@@ -120,7 +119,7 @@ document.addEventListener('DOMContentLoaded', () => {
         // Save model parameters
         modelPath = modelPathInput.value.trim();
         nCtx = parseInt(nCtxInput.value) || 2048;
-        nThreads = parseInt(nThreadsInput.value) || 10;
+        nThreads = parseInt(nThreadsInput.value) || 6;
         nGpuLayers = parseInt(nGpuLayersInput.value) || 20;
 
         localStorage.setItem('modelPath', modelPath);
@@ -515,7 +514,7 @@ document.addEventListener('DOMContentLoaded', () => {
         const params = {
             model_path: path,
             n_ctx: parseInt(nCtxInput.value) || 2048,
-            n_threads: parseInt(nThreadsInput.value) || 10,
+            n_threads: parseInt(nThreadsInput.value) || 6,
             n_gpu_layers: parseInt(nGpuLayersInput.value) || 20
         };
 
