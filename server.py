@@ -9,6 +9,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from llama_cpp import Llama
 from pydantic import BaseModel
 from typing import List, Optional, Literal
+from context_manager import ContextManager
 
 app = FastAPI(title="Local LLM Server")
 
@@ -30,6 +31,9 @@ async def log_requests(request: Request, call_next):
 
 # Global model instance
 llm = None
+
+# Context manager instance
+ctx_manager = ContextManager()
 
 # Model state tracking
 model_state = {
@@ -88,6 +92,8 @@ class ChatRequest(BaseModel):
     model: Optional[str] = "gemma-local-model"
     messages: List[ChatMessage]
     stream: Optional[bool] = False
+    max_tokens: Optional[int] = 512
+    summarize: Optional[bool] = False
 
 class LoadModelRequest(BaseModel):
     model_path: str
@@ -215,6 +221,13 @@ async def get_model_status():
     return model_state
 
 
+@app.post("/api/reset-context")
+async def reset_context():
+    """Reset the context manager's summary cache (for new chat sessions)."""
+    ctx_manager.reset()
+    return {"success": True}
+
+
 @app.post("/api/chat")
 async def chat(chat_request: ChatRequest):
     print(f"DEBUG: Received chat request: {chat_request}")
@@ -252,7 +265,19 @@ async def chat(chat_request: ChatRequest):
             
     print(f"DEBUG: Processed {len(raw_messages)} raw messages into {len(processed_messages)} messages for inference.")
     stream = chat_request.stream
+    max_tokens = chat_request.max_tokens or 512
     
+    # Apply context management (trimming + optional summarization)
+    n_ctx = model_state.get("n_ctx", 2048)
+    processed_messages = ctx_manager.trim_messages(
+        messages=processed_messages,
+        n_ctx=n_ctx,
+        max_tokens=max_tokens,
+        summarize_enabled=chat_request.summarize or False,
+        llm=llm
+    )
+    print(f"DEBUG: After context trimming: {len(processed_messages)} messages for inference.")
+
     try:
         if stream:
             def generate():
@@ -260,6 +285,7 @@ async def chat(chat_request: ChatRequest):
                 try:
                     response = llm.create_chat_completion(
                         messages=processed_messages,
+                        max_tokens=max_tokens,
                         stream=True
                     )
                     for chunk in response:
@@ -284,6 +310,7 @@ async def chat(chat_request: ChatRequest):
             print("DEBUG: Starting non-stream generation...")
             response = llm.create_chat_completion(
                 messages=processed_messages,
+                max_tokens=max_tokens,
                 stream=False
             )
             content = response['choices'][0]['message']['content']

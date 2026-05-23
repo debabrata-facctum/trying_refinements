@@ -118,6 +118,23 @@
                     <button id="load-model-btn" class="primary-btn" style="width: 100%;">Load Model</button>
                     <small id="model-status-text" class="model-status">No model loaded</small>
                 </div>
+
+                <hr style="border-color: var(--border-color); margin: 10px 0;">
+                <h3 style="font-size: 1rem; font-weight: 500; color: var(--text-primary);">Inference Settings</h3>
+
+                <div class="form-group">
+                    <label for="max-tokens-input">Max Response Tokens</label>
+                    <input type="number" id="max-tokens-input" value="512" min="64" max="4096">
+                    <small>Maximum tokens the model can generate per response.</small>
+                </div>
+                <div class="form-group">
+                    <label class="toggle-label">
+                        <span>Summarize old context</span>
+                        <input type="checkbox" id="summarize-toggle">
+                        <span class="toggle-slider"></span>
+                    </label>
+                    <small>When enabled, old messages are summarized instead of dropped. Adds latency but preserves context awareness. Requires n_ctx ≥ 3000.</small>
+                </div>
             </div>
             <div class="modal-footer">
                 <button id="reset-settings" class="secondary-btn">Reset to Default</button>

@@ -29,6 +29,10 @@ document.addEventListener('DOMContentLoaded', () => {
     const browserGoUpBtn = document.getElementById('browser-go-up-btn');
     const closeBrowserBtn = document.getElementById('close-browser-btn');
 
+    // Inference Settings DOM Elements
+    const maxTokensInput = document.getElementById('max-tokens-input');
+    const summarizeToggle = document.getElementById('summarize-toggle');
+
     // Global Error Catcher — log to console only, don't pollute the chat
     window.onerror = function (msg, url, lineNo, columnNo, error) {
         console.error('Window Error:', msg, 'at', url, ':', lineNo);
@@ -57,6 +61,10 @@ document.addEventListener('DOMContentLoaded', () => {
     let nThreads = parseInt(localStorage.getItem('nThreads')) || 6;
     let nGpuLayers = parseInt(localStorage.getItem('nGpuLayers')) || 20;
 
+    // Inference settings
+    let maxTokens = parseInt(localStorage.getItem('maxTokens')) || 512;
+    let summarizeEnabled = localStorage.getItem('summarizeEnabled') === 'true';
+
     // File browser state
     let currentBrowserPath = '';
 
@@ -70,6 +78,10 @@ document.addEventListener('DOMContentLoaded', () => {
     nCtxInput.value = nCtx;
     nThreadsInput.value = nThreads;
     nGpuLayersInput.value = nGpuLayers;
+
+    // Initialize inference settings UI
+    maxTokensInput.value = maxTokens;
+    summarizeToggle.checked = summarizeEnabled;
 
     // Check connection on load
     checkConnection();
@@ -126,6 +138,12 @@ document.addEventListener('DOMContentLoaded', () => {
         localStorage.setItem('nCtx', nCtx.toString());
         localStorage.setItem('nThreads', nThreads.toString());
         localStorage.setItem('nGpuLayers', nGpuLayers.toString());
+
+        // Save inference settings
+        maxTokens = parseInt(maxTokensInput.value) || 512;
+        summarizeEnabled = summarizeToggle.checked;
+        localStorage.setItem('maxTokens', maxTokens.toString());
+        localStorage.setItem('summarizeEnabled', summarizeEnabled.toString());
 
         settingsModal.classList.remove('active');
         checkConnection();
@@ -243,7 +261,9 @@ document.addEventListener('DOMContentLoaded', () => {
         console.log('Request body:', {
             model: state.model,
             messages: messages,
-            stream: true
+            stream: true,
+            max_tokens: maxTokens,
+            summarize: summarizeEnabled
         });
 
         try {
@@ -255,7 +275,9 @@ document.addEventListener('DOMContentLoaded', () => {
                 body: JSON.stringify({
                     model: state.model,
                     messages: messages,
-                    stream: true
+                    stream: true,
+                    max_tokens: maxTokens,
+                    summarize: summarizeEnabled
                 })
             });
 
@@ -534,9 +556,14 @@ document.addEventListener('DOMContentLoaded', () => {
             const data = await response.json();
 
             if (response.ok && data.success) {
-                const modelName = path.split(/[/\\]/).pop();
+                const modelName = path.split(/[/\\]/).pop().replace(/\.gguf$/i, '');
                 modelStatusText.textContent = `Loaded: ${modelName}`;
                 modelStatusText.className = 'model-status loaded';
+
+                // Auto-fill model name from filename
+                modelNameInput.value = modelName;
+                state.model = modelName;
+                localStorage.setItem('model', modelName);
 
                 // Persist settings
                 localStorage.setItem('modelPath', path);
@@ -566,12 +593,17 @@ document.addEventListener('DOMContentLoaded', () => {
             const data = await response.json();
 
             if (data.status === 'loaded' && data.model_path) {
-                const modelName = data.model_path.split(/[/\\]/).pop();
+                const modelName = data.model_path.split(/[/\\]/).pop().replace(/\.gguf$/i, '');
                 modelStatusText.textContent = `Loaded: ${modelName}`;
                 modelStatusText.className = 'model-status loaded';
                 modelPathInput.value = data.model_path;
                 modelPath = data.model_path;
                 localStorage.setItem('modelPath', modelPath);
+
+                // Auto-fill model name from loaded model
+                modelNameInput.value = modelName;
+                state.model = modelName;
+                localStorage.setItem('model', modelName);
             } else if (data.status === 'loading') {
                 modelStatusText.textContent = 'Loading model...';
                 modelStatusText.className = 'model-status loading';

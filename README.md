@@ -22,18 +22,8 @@ Most local LLM tools (Ollama, text-generation-webui, LM Studio) hide the model c
 | Thread allocation | Automatic (opaque) | You choose exactly how many CPU threads to dedicate |
 | GPU layer offloading | All-or-nothing | Fine-grained: 0 (CPU only), partial, or -1 (offload all) |
 | Model loading | Restart required | Hot-swap from the UI, no server restart |
+| Context management | Silent truncation | Smart trimming with optional summarization |
 | Configuration | Config files / CLI flags | Visual settings panel with immediate feedback |
-
-**Quick primer on these parameters:**
-
-- **Context window (`n_ctx`)** — how many tokens the model can hold in memory at once. Your messages, the conversation history, and the model's response all share this space. Bigger = longer conversations, but uses more RAM.
-- **Threads (`n_threads`)** — how many CPU cores to throw at inference. More threads = faster responses, but only up to your physical core count. Going higher actually hurts performance.
-- **GPU layers (`n_gpu_layers`)** — a model is a stack of transformer layers. This controls how many run on GPU vs CPU. Set to `0` for CPU-only, set to `-1` to offload everything to GPU, or pick a number in between based on how much VRAM you have.
-
-This matters if you're:
-- Running on constrained hardware and need to tune for your specific machine
-- Learning how LLM inference parameters affect speed and quality
-- Want a minimal, transparent setup with no magic
 
 ---
 
@@ -104,7 +94,7 @@ Open [http://localhost:8080](http://localhost:8080)
 Browser (localhost:8080)          FastAPI Server (server.py)
 ┌─────────────────────┐          ┌──────────────────────────┐
 │  Chat UI            │  fetch   │  /api/chat               │
-│  • Send messages    │ ──────►  │  • Merge system prompt   │
+│  • Send messages    │ ──────►  │  • Context management    │
 │  • Stream responses │ ◄──────  │  • Run inference         │
 │  • Render markdown  │  NDJSON  │  • Stream tokens back    │
 │                     │          │                          │
@@ -145,6 +135,79 @@ The frontend renders markdown in real-time using `marked.js` and syntax-highligh
 
 ---
 
+## Context Management
+
+Local models have limited context windows. Without management, long conversations silently overflow — the model loses track of earlier messages or produces broken output. LocalMind handles this automatically.
+
+### How it works
+
+Every chat request goes through the context manager before reaching the model:
+
+```
+Messages arrive → Check token budget → Trim if needed → Send to model
+```
+
+The system operates in two modes based on a toggle in Settings:
+
+**Sliding Window (default)** — oldest messages are dropped when the conversation exceeds 75% of the available token budget. Simple, fast, zero overhead.
+
+**Summarize + Protect (opt-in)** — instead of dropping old messages entirely, the server compresses them into a rolling summary using the model itself. Recent messages stay verbatim so the model can reference exact wording.
+
+### Budget allocation
+
+```
+Total context window (n_ctx)
+├── Response reserve (max_tokens)     → space for the model's answer
+└── Input budget (the rest)
+    ├── System prompt                 → ~1%
+    ├── Summary (when enabled)        → 10% of input budget
+    ├── Protected zone                → 30% of input budget (recent messages, verbatim)
+    └── Headroom                      → ~59% (free space for new messages)
+```
+
+After every trim, ~60% of the input budget is free — giving you several more exchanges before the next trim triggers.
+
+### Adaptive behavior
+
+The context manager adapts to the configured context window:
+
+| n_ctx | Behavior |
+|-------|----------|
+| < 3000 | Sliding window only (summary toggle ignored — not enough room for it to help) |
+| ≥ 3000 | Full logic: sliding window when toggle OFF, summarize + protect when toggle ON |
+
+The summary size also scales:
+- Under 4k context: capped at 300 tokens
+- 4k and above: 10% of input budget (no cap — larger windows get richer summaries)
+
+### Protected zone
+
+Recent messages are never summarized. The protected zone uses a **token budget** (30% of input budget), not a fixed message count. This means:
+- Short exchanges → more pairs protected (5–7 recent exchanges)
+- Long exchanges → fewer pairs protected (1–2 recent exchanges)
+- Always at least 1 exchange protected (the most recent one)
+
+### Rolling summary
+
+When summarization is enabled, dropped messages are compressed into a rolling summary:
+
+1. First overflow: messages 1–5 get summarized → "Summary v1"
+2. Next overflow: old summary + messages 6–8 → "Summary v2" (updated, not re-summarized from scratch)
+3. Repeats as conversation grows
+
+The summary call is fast (~2–5 seconds) because it only processes the old summary + newly dropped messages, not the entire history.
+
+### Settings
+
+| Parameter | Default | Range | Purpose |
+|-----------|---------|-------|---------|
+| **Max Response Tokens** | 512 | 64 – 4096 | Caps how long the model's response can be |
+| **Summarize old context** | OFF | ON/OFF | Enable rolling summarization of dropped messages |
+
+> **Tip:** If you notice the model "forgetting" things from earlier in the conversation, enable summarization. It adds a few seconds of latency at trim points but preserves awareness of earlier topics.
+
+---
+
 ## Settings & Parameters
 
 All configurable from the Settings modal in the UI. Settings persist in `localStorage` — they survive page refreshes.
@@ -155,6 +218,8 @@ All configurable from the Settings modal in the UI. Settings persist in `localSt
 | **n_ctx** | 2048 | 128 – 8192+ |
 | **n_threads** | 6 | 1 – your core count |
 | **n_gpu_layers** | 20 | 0, 1–99, or -1 |
+| **Max Response Tokens** | 512 | 64 – 4096 |
+| **Summarize old context** | OFF | ON/OFF |
 | **System Prompt** | "You are a helpful AI assistant." | Any text |
 
 ### Understanding the parameters
@@ -199,6 +264,17 @@ Guidelines:
 
 If you set it too high for your VRAM, the server will crash on model load. Lower the value and try again.
 
+**`max_tokens` — Response Length Cap**
+
+Maximum number of tokens the model can generate per response. Without this, the model decides when to stop — which could be 50 tokens or 2000.
+
+- `256` — short, concise answers
+- `512` — good default for most conversations
+- `1024` — detailed explanations, code generation
+- `2048+` — long-form content (essays, full implementations)
+
+This also determines how much of the context window is reserved for the response vs. conversation history.
+
 ---
 
 ## API Endpoints
@@ -210,6 +286,7 @@ If you set it too high for your VRAM, the server will crash on model load. Lower
 | `POST` | `/api/load-model` | Load a model with given parameters |
 | `GET` | `/api/model-status` | Current model state (loaded/error/not_loaded) |
 | `POST` | `/api/chat` | Send messages, receive inference response |
+| `POST` | `/api/reset-context` | Clear the summary cache (new chat session) |
 
 <details>
 <summary><strong>Example: POST /api/chat</strong></summary>
@@ -221,7 +298,9 @@ If you set it too high for your VRAM, the server will crash on model load. Lower
     {"role": "system", "content": "You are a helpful assistant."},
     {"role": "user", "content": "Explain recursion in one sentence."}
   ],
-  "stream": true
+  "stream": true,
+  "max_tokens": 512,
+  "summarize": false
 }
 ```
 
@@ -247,12 +326,14 @@ If you set it too high for your VRAM, the server will crash on model load. Lower
 
 ```
 Web_local_llm/
-├── server.py           # FastAPI backend — model loading, chat, file browser
-├── index.html          # Chat UI with settings modal and file browser
-├── script.js           # Frontend logic — streaming, model management
-├── style.css           # Dark theme (GitHub-dark inspired)
-├── requirements.txt    # Python dependencies
-└── README.md           # This file
+├── server.py             # FastAPI backend — routing, model loading, chat
+├── context_manager.py    # Context trimming + optional summarization logic
+├── index.html            # Chat UI with settings modal and file browser
+├── script.js             # Frontend logic — streaming, model management
+├── style.css             # Dark theme (GitHub-dark inspired)
+├── requirements.txt      # Python dependencies (pinned versions)
+├── logic.md              # Internal design docs for development reference
+└── README.md             # This file
 ```
 
 ---
@@ -263,7 +344,13 @@ Web_local_llm/
 The server starts without a model. Open Settings → Pick Model → select a `.gguf` file → Load Model.
 
 ### Responses are empty or cut off
-The conversation history may exceed the context window. Refresh the page to clear history, or increase `n_ctx` in Settings (costs more RAM).
+- The `max_tokens` setting may be too low — increase it in Settings.
+- If responses cut off mid-sentence at the same length every time, that's the `max_tokens` cap. Raise it.
+
+### Model seems to forget earlier conversation
+- This is normal — the context manager drops old messages to stay within budget.
+- Enable **Summarize old context** in Settings to preserve awareness of earlier topics.
+- Increase `n_ctx` for a larger conversation window (costs more RAM).
 
 ### Server crashes with GPU-related errors
 Set **GPU Layers** to `0` in Settings. This forces CPU-only inference — slower but universally compatible.
@@ -278,16 +365,15 @@ Set **GPU Layers** to `0` in Settings. This forces CPU-only inference — slower
 - Use a smaller quantized model (Q4 instead of Q8)
 - Increase `n_threads` to match your CPU core count
 - If you have a GPU, set `n_gpu_layers` to `-1` to offload everything
+- If summarization is ON, it adds a few seconds at trim points — this is expected
 
 ---
 
 ## Roadmap
 
 - Conversation persistence with SQLite (multi-chat sidebar, "New Chat" button)
-- Server-side history trimming to prevent silent context overflow
 - Bundle JS dependencies locally for true offline use (no CDN needed)
 - Hardware auto-detection — suggest optimal `n_threads` and `n_gpu_layers` on startup
-- `max_tokens` control — let users cap response length from the UI
 - Structured logging with Python `logging` module
 
 ---
