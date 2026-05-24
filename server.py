@@ -252,6 +252,14 @@ async def chat(chat_request: ChatRequest):
                 system_instruction += "\n\n" + msg['content']
         else:
             processed_messages.append(msg)
+
+    # Append length guidance based on max_tokens setting
+    word_limit = int(max_tokens * 0.75)
+    length_hint = f"\nKeep your response concise and complete within approximately {word_limit} words."
+    if system_instruction:
+        system_instruction += length_hint
+    else:
+        system_instruction = length_hint.strip()
             
     # If we have a system prompt, prepend it to the first user message or handle it
     # Llama-cpp-python can be finicky with explicit 'system' roles depending on the model,
