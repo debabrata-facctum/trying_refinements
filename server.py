@@ -241,6 +241,7 @@ async def chat(chat_request: ChatRequest):
     # Process messages to handle system prompts and ensure validity
     raw_messages = [m.model_dump() for m in chat_request.messages]
     processed_messages = []
+    max_tokens = chat_request.max_tokens or 512
     
     system_instruction = None
     
@@ -273,7 +274,6 @@ async def chat(chat_request: ChatRequest):
             
     print(f"DEBUG: Processed {len(raw_messages)} raw messages into {len(processed_messages)} messages for inference.")
     stream = chat_request.stream
-    max_tokens = chat_request.max_tokens or 512
     
     # Apply context management (trimming + optional summarization)
     n_ctx = model_state.get("n_ctx", 2048)
