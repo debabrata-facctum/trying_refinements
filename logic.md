@@ -244,4 +244,51 @@ class ContextManager:
 ```
 
 ---
+
+## Response Length Hint
+
+### Problem
+
+When `max_tokens` is set, the model has no awareness of the limit. It generates freely until the hard cap cuts it off mid-sentence, resulting in abrupt incomplete answers.
+
+### Solution
+
+Inject a dynamic length instruction into the system prompt on every request. The model is told (in words) how long its response should be, so it attempts to wrap up naturally within the budget.
+
+### Implementation
+
+In `server.py`, after collecting the system prompt from the request:
+
+```python
+word_limit = int(max_tokens * 0.75)  # tokens → approximate words
+length_hint = f"\nKeep your response concise and complete within approximately {word_limit} words."
+system_instruction += length_hint
+```
+
+### Token-to-Word Conversion
+
+Uses the standard English approximation: **1 token ≈ 0.75 words**.
+
+| max_tokens | word_limit in prompt |
+|-----------|---------------------|
+| 256       | ~192 words          |
+| 512       | ~384 words          |
+| 1024      | ~768 words          |
+| 2048      | ~1536 words         |
+
+### Behavior
+
+- The hint is appended server-side — the user doesn't see it in their system prompt field
+- It's dynamic: changes immediately when the user updates `max_tokens` in settings
+- It's a best-effort instruction — small models (4B) may still overshoot
+- The hard `max_tokens` cap remains as a safety net for when the model ignores the hint
+- Combined effect: fewer abrupt cutoffs because the model *tries* to finish within budget
+
+### Limitations
+
+- Small models (4B) are unreliable at following length constraints
+- The model may produce shorter answers than necessary (over-constraining)
+- Code-heavy responses are harder to fit in word limits (code is dense)
+
+---
 d, llm):
