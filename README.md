@@ -38,21 +38,9 @@ pip install -r requirements.txt
 <details>
 <summary><strong>Platform-specific notes for llama-cpp-python</strong></summary>
 
-`llama-cpp-python` compiles C++ code during install. If you hit build errors:
+`llama-cpp-python` compiles C++ code during install and can be tricky to set up depending on your OS and hardware (CPU vs GPU).
 
-```bash
-# Pre-built wheels (no compiler needed)
-pip install llama-cpp-python --prefer-binary
-
-# Windows — requires Visual Studio Build Tools
-# Download from: https://visualstudio.microsoft.com/visual-cpp-build-tools/
-
-# macOS with Apple Silicon GPU (Metal acceleration)
-CMAKE_ARGS="-DGGML_METAL=on" pip install llama-cpp-python
-
-# Linux/Windows with NVIDIA GPU (CUDA 12.4)
-pip install llama-cpp-python --extra-index-url https://abetlen.github.io/llama-cpp-python/whl/cu124
-```
+See **[INSTALL_LLAMA_CPP.md](./INSTALL_LLAMA_CPP.md)** for the full installation guide covering Windows, Linux, and macOS with both CPU and GPU builds.
 
 </details>
 
