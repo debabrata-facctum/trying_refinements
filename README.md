@@ -207,6 +207,10 @@ All configurable from the Settings modal in the UI. Settings persist in `localSt
 | **n_threads** | 6 | 1 – your core count |
 | **n_gpu_layers** | 20 | 0, 1–99, or -1 |
 | **Max Response Tokens** | 512 | 64 – 4096 |
+| **Temperature** | 0.7 | 0.0 – 2.0 |
+| **Top P** | 0.9 | 0.05 – 1.0 |
+| **Top K** | 40 | 1 – 100 |
+| **Repeat Penalty** | 1.1 | 1.0 – 2.0 |
 | **Summarize old context** | OFF | ON/OFF |
 | **System Prompt** | "You are a helpful AI assistant." | Any text |
 
@@ -216,10 +220,28 @@ All configurable from the Settings modal in the UI. Settings persist in `localSt
 
 How many tokens (roughly words) the model can "see" at once — your message, the conversation history, and its own response all share this budget.
 
-- `2048` — good default, handles ~3–4 back-and-forth exchanges
-- `4096` — comfortable for longer conversations
-- `8192` — full context, useful for document analysis or long chats
-- Below `1024` — the model loses track of the conversation very quickly
+The maximum context window you can set depends on two things:
+
+1. **The model's trained limit** — each model has a maximum context length it was trained on. Setting `n_ctx` beyond this won't help and may produce garbage output. Check the model card on HuggingFace for this value.
+2. **Your available RAM/VRAM** — larger context windows consume more memory. Roughly, doubling `n_ctx` adds ~0.5–1 GB of RAM usage depending on the model size.
+
+| Model example | Trained max context | Recommended n_ctx |
+|---------------|:-------------------:|:-----------------:|
+| Gemma 3 4B | 128000 | 2048–8192 (RAM limited) |
+| Mistral 7B v0.2 | 32000 | 2048–8192 (RAM limited) |
+| Llama 3.1 8B | 128000 | 2048–8192 (RAM limited) |
+| Phi-3 Mini (4K variant) | 4096 | 2048–4096 |
+| Phi-3 Mini (128K variant) | 128000 | 2048–8192 (RAM limited) |
+
+**Practical guidelines:**
+
+- `2048` — safe default, works on any machine with 8 GB RAM. Handles ~3–4 back-and-forth exchanges.
+- `4096` — comfortable for longer conversations. Needs ~1–2 GB extra RAM over the base model.
+- `8192` — good for document analysis or extended chats. Needs ~2–4 GB extra RAM.
+- `16384+` — only if your model supports it AND you have 16+ GB RAM to spare. Diminishing returns for casual chat.
+- Below `1024` — the model loses track of the conversation very quickly. Not recommended.
+
+> **How to decide:** Start with `2048`. If the model forgets things too quickly, bump to `4096`. Only go higher if you have the RAM and the model was trained for it. If the server crashes or slows to a crawl after loading, your `n_ctx` is too high for your hardware — lower it.
 
 **`n_threads` — CPU Thread Allocation**
 
@@ -262,6 +284,108 @@ Maximum number of tokens the model can generate per response. Without this, the 
 - `2048+` — long-form content (essays, full implementations)
 
 This also determines how much of the context window is reserved for the response vs. conversation history.
+
+---
+
+## Inference Sampling Parameters
+
+These parameters control **how the model picks the next token** during generation. They directly affect the creativity, coherence, and repetitiveness of the output.
+
+### How LLM token sampling works
+
+At each step, the model produces a probability distribution over its entire vocabulary (~32,000+ tokens). Sampling parameters filter and reshape this distribution before a token is picked:
+
+```
+Model outputs probabilities for all tokens
+    │
+    ▼
+[Top K filter] → Keep only the K most probable tokens, discard the rest
+    │
+    ▼
+[Top P filter] → From those K tokens, keep only enough to cover P cumulative probability
+    │
+    ▼
+[Temperature] → Flatten or sharpen the remaining distribution
+    │
+    ▼
+[Sample] → Pick one token randomly from the adjusted distribution
+    │
+    ▼
+[Repeat Penalty] → If the picked token appeared recently, penalize it (reduce its chance next time)
+```
+
+### Parameter details
+
+**`temperature` — Randomness Control**
+
+Reshapes the probability distribution before sampling.
+
+| Value | Effect |
+|-------|--------|
+| 0.0–0.2 | Nearly deterministic — always picks the most likely token. Same input → same output. |
+| 0.5–0.8 | Balanced — some variety while staying coherent. Good for general use. |
+| 1.0 | Raw probabilities — no modification. |
+| 1.2–2.0 | High randomness — flattens the distribution so unlikely tokens get picked more often. Creative but can become incoherent. |
+
+**When to adjust:** Lower it for factual Q&A, code generation, or when you want consistent answers. Raise it for creative writing, brainstorming, or when responses feel too robotic.
+
+---
+
+**`top_p` — Nucleus Sampling**
+
+After Top K filtering, Top P further narrows the candidates. It keeps the smallest set of tokens whose cumulative probability adds up to P.
+
+| Value | Effect |
+|-------|--------|
+| 0.1–0.3 | Very narrow — only the top 1–3 tokens are considered. Extremely focused. |
+| 0.5–0.7 | Moderate — a handful of strong candidates. |
+| 0.9 | Default — covers most of the probability mass, allows some variety. |
+| 1.0 | No filtering — all tokens that survived Top K are eligible. |
+
+**Example:** If the model thinks the next token is 60% "rain", 25% "water", 10% "drops", 5% "storm" — with Top P = 0.85, only "rain" and "water" are kept (60% + 25% = 85%).
+
+---
+
+**`top_k` — Hard Candidate Limit**
+
+The simplest filter: keep only the K most probable tokens, throw away everything else.
+
+| Value | Effect |
+|-------|--------|
+| 1 | Greedy decoding — always picks the single most likely token. Fully deterministic. |
+| 10–20 | Very focused — limited vocabulary at each step. |
+| 40 | Default — good balance of variety and coherence. |
+| 80–100 | Wide open — many candidates, more surprising word choices. |
+
+**When to adjust:** Lower it when the model is being too random or off-topic. Raise it when responses feel repetitive or predictable.
+
+---
+
+**`repeat_penalty` — Repetition Control**
+
+Penalizes tokens that have already appeared in the generated text. The penalty multiplies against the token's probability, making it less likely to be picked again.
+
+| Value | Effect |
+|-------|--------|
+| 1.0 | No penalty — the model can repeat freely. May loop on phrases. |
+| 1.1 | Light penalty (default) — discourages exact repetition without being aggressive. |
+| 1.3–1.5 | Strong penalty — actively avoids repeating words/phrases. Can make output more verbose as the model searches for synonyms. |
+| 1.8–2.0 | Very aggressive — forces extreme variety. Can produce unnatural phrasing. |
+
+**When to adjust:** If the model keeps repeating the same phrase in a loop, bump this to 1.3+. If responses feel unnaturally wordy or use strange synonyms, lower it back toward 1.1.
+
+---
+
+### Recommended presets
+
+| Use Case | Temperature | Top P | Top K | Repeat Penalty |
+|----------|:-----------:|:-----:|:-----:|:--------------:|
+| **Factual Q&A / Code** | 0.1–0.3 | 0.5 | 10–20 | 1.0–1.1 |
+| **General chat** | 0.7 | 0.9 | 40 | 1.1 |
+| **Creative writing** | 0.9–1.1 | 0.95 | 60–80 | 1.2–1.3 |
+| **Brainstorming** | 1.2+ | 0.95 | 80–100 | 1.3 |
+
+> **Tip:** Temperature is the most impactful parameter. Start by adjusting only temperature, then fine-tune with Top P and Top K if needed. Repeat Penalty is mostly useful when you notice looping behavior.
 
 ---
 

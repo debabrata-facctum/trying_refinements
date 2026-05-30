@@ -94,6 +94,10 @@ class ChatRequest(BaseModel):
     stream: Optional[bool] = False
     max_tokens: Optional[int] = 512
     summarize: Optional[bool] = False
+    temperature: Optional[float] = 0.7
+    top_p: Optional[float] = 0.9
+    top_k: Optional[int] = 40
+    repeat_penalty: Optional[float] = 1.1
 
 class LoadModelRequest(BaseModel):
     model_path: str
@@ -238,6 +242,12 @@ async def chat(chat_request: ChatRequest):
             print("ERROR: Model failed to load")
             raise HTTPException(status_code=500, detail="Model not configured or not found. Check server.py")
 
+    # Extract inference parameters
+    temperature = chat_request.temperature if chat_request.temperature is not None else 0.7
+    top_p = chat_request.top_p if chat_request.top_p is not None else 0.9
+    top_k = chat_request.top_k if chat_request.top_k is not None else 40
+    repeat_penalty = chat_request.repeat_penalty if chat_request.repeat_penalty is not None else 1.1
+
     # Process messages to handle system prompts and ensure validity
     raw_messages = [m.model_dump() for m in chat_request.messages]
     processed_messages = []
@@ -294,6 +304,10 @@ async def chat(chat_request: ChatRequest):
                     response = llm.create_chat_completion(
                         messages=processed_messages,
                         max_tokens=max_tokens,
+                        temperature=temperature,
+                        top_p=top_p,
+                        top_k=top_k,
+                        repeat_penalty=repeat_penalty,
                         stream=True
                     )
                     for chunk in response:
@@ -319,6 +333,10 @@ async def chat(chat_request: ChatRequest):
             response = llm.create_chat_completion(
                 messages=processed_messages,
                 max_tokens=max_tokens,
+                temperature=temperature,
+                top_p=top_p,
+                top_k=top_k,
+                repeat_penalty=repeat_penalty,
                 stream=False
             )
             content = response['choices'][0]['message']['content']

@@ -32,6 +32,14 @@ document.addEventListener('DOMContentLoaded', () => {
     // Inference Settings DOM Elements
     const maxTokensInput = document.getElementById('max-tokens-input');
     const summarizeToggle = document.getElementById('summarize-toggle');
+    const temperatureInput = document.getElementById('temperature-input');
+    const temperatureValue = document.getElementById('temperature-value');
+    const topPInput = document.getElementById('top-p-input');
+    const topPValue = document.getElementById('top-p-value');
+    const topKInput = document.getElementById('top-k-input');
+    const topKValue = document.getElementById('top-k-value');
+    const repeatPenaltyInput = document.getElementById('repeat-penalty-input');
+    const repeatPenaltyValue = document.getElementById('repeat-penalty-value');
 
     // Global Error Catcher — log to console only, don't pollute the chat
     window.onerror = function (msg, url, lineNo, columnNo, error) {
@@ -64,6 +72,10 @@ document.addEventListener('DOMContentLoaded', () => {
     // Inference settings
     let maxTokens = parseInt(localStorage.getItem('maxTokens')) || 512;
     let summarizeEnabled = localStorage.getItem('summarizeEnabled') === 'true';
+    let temperature = parseFloat(localStorage.getItem('temperature')) || 0.7;
+    let topP = parseFloat(localStorage.getItem('topP')) || 0.9;
+    let topK = parseInt(localStorage.getItem('topK')) || 40;
+    let repeatPenalty = parseFloat(localStorage.getItem('repeatPenalty')) || 1.1;
 
     // File browser state
     let currentBrowserPath = '';
@@ -82,6 +94,28 @@ document.addEventListener('DOMContentLoaded', () => {
     // Initialize inference settings UI
     maxTokensInput.value = maxTokens;
     summarizeToggle.checked = summarizeEnabled;
+    temperatureInput.value = temperature;
+    temperatureValue.textContent = temperature.toFixed(2);
+    topPInput.value = topP;
+    topPValue.textContent = topP.toFixed(2);
+    topKInput.value = topK;
+    topKValue.textContent = topK;
+    repeatPenaltyInput.value = repeatPenalty;
+    repeatPenaltyValue.textContent = repeatPenalty.toFixed(2);
+
+    // Slider live-update listeners
+    temperatureInput.addEventListener('input', () => {
+        temperatureValue.textContent = parseFloat(temperatureInput.value).toFixed(2);
+    });
+    topPInput.addEventListener('input', () => {
+        topPValue.textContent = parseFloat(topPInput.value).toFixed(2);
+    });
+    topKInput.addEventListener('input', () => {
+        topKValue.textContent = topKInput.value;
+    });
+    repeatPenaltyInput.addEventListener('input', () => {
+        repeatPenaltyValue.textContent = parseFloat(repeatPenaltyInput.value).toFixed(2);
+    });
 
     // Check connection on load
     checkConnection();
@@ -142,8 +176,17 @@ document.addEventListener('DOMContentLoaded', () => {
         // Save inference settings
         maxTokens = parseInt(maxTokensInput.value) || 512;
         summarizeEnabled = summarizeToggle.checked;
+        temperature = parseFloat(temperatureInput.value) || 0.7;
+        topP = parseFloat(topPInput.value) || 0.9;
+        topK = parseInt(topKInput.value) || 40;
+        repeatPenalty = parseFloat(repeatPenaltyInput.value) || 1.1;
+
         localStorage.setItem('maxTokens', maxTokens.toString());
         localStorage.setItem('summarizeEnabled', summarizeEnabled.toString());
+        localStorage.setItem('temperature', temperature.toString());
+        localStorage.setItem('topP', topP.toString());
+        localStorage.setItem('topK', topK.toString());
+        localStorage.setItem('repeatPenalty', repeatPenalty.toString());
 
         settingsModal.classList.remove('active');
         checkConnection();
@@ -263,7 +306,11 @@ document.addEventListener('DOMContentLoaded', () => {
             messages: messages,
             stream: true,
             max_tokens: maxTokens,
-            summarize: summarizeEnabled
+            summarize: summarizeEnabled,
+            temperature: temperature,
+            top_p: topP,
+            top_k: topK,
+            repeat_penalty: repeatPenalty
         });
 
         try {
@@ -277,7 +324,11 @@ document.addEventListener('DOMContentLoaded', () => {
                     messages: messages,
                     stream: true,
                     max_tokens: maxTokens,
-                    summarize: summarizeEnabled
+                    summarize: summarizeEnabled,
+                    temperature: temperature,
+                    top_p: topP,
+                    top_k: topK,
+                    repeat_penalty: repeatPenalty
                 })
             });
 
@@ -381,7 +432,7 @@ document.addEventListener('DOMContentLoaded', () => {
         }
 
         chatArea.appendChild(messageDiv);
-        scrollToBottom();
+        scrollToBottom(true); // Force scroll when a new message is added
 
         // Remove welcome message if it exists
         const welcome = document.querySelector('.welcome-message');
@@ -406,8 +457,19 @@ document.addEventListener('DOMContentLoaded', () => {
         scrollToBottom();
     }
 
-    function scrollToBottom() {
-        chatArea.scrollTop = chatArea.scrollHeight;
+    // Track whether user has manually scrolled up
+    let userScrolledUp = false;
+
+    chatArea.addEventListener('scroll', () => {
+        const threshold = 100; // pixels from bottom
+        const atBottom = chatArea.scrollHeight - chatArea.scrollTop - chatArea.clientHeight < threshold;
+        userScrolledUp = !atBottom;
+    });
+
+    function scrollToBottom(force = false) {
+        if (force || !userScrolledUp) {
+            chatArea.scrollTop = chatArea.scrollHeight;
+        }
     }
 
     // --- File Browser Functions ---
