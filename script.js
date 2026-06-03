@@ -29,6 +29,17 @@ document.addEventListener('DOMContentLoaded', () => {
     const browserGoUpBtn = document.getElementById('browser-go-up-btn');
     const closeBrowserBtn = document.getElementById('close-browser-btn');
 
+    // Hardware Profile DOM Elements
+    const hwDetectionBanner = document.getElementById('hw-detection-banner');
+    const hwBannerText = document.getElementById('hw-banner-text');
+    const hwCpuFlags = document.getElementById('hw-cpu-flags');
+    const hwProfileSelect = document.getElementById('hw-profile-select');
+    const nBatchInput = document.getElementById('n-batch-input');
+    const flashAttnToggle = document.getElementById('flash-attn-toggle');
+    const mlockToggle = document.getElementById('mlock-toggle');
+    const numaToggle = document.getElementById('numa-toggle');
+    const kvQuantSelect = document.getElementById('kv-quant-select');
+
     // Inference Settings DOM Elements
     const maxTokensInput = document.getElementById('max-tokens-input');
     const summarizeToggle = document.getElementById('summarize-toggle');
@@ -48,7 +59,6 @@ document.addEventListener('DOMContentLoaded', () => {
     };
 
     // State
-    // Some browsers block requests to 0.0.0.0, so we convert it to localhost
     let currentOrigin = window.location.origin;
     if (currentOrigin.includes('0.0.0.0')) {
         currentOrigin = currentOrigin.replace('0.0.0.0', 'localhost');
@@ -56,7 +66,6 @@ document.addEventListener('DOMContentLoaded', () => {
 
     const defaultApiUrl = `${currentOrigin}/api/chat`;
     let state = {
-        // Use the current origin to ensure we hit the same server
         apiUrl: localStorage.getItem('apiUrl') || defaultApiUrl,
         model: localStorage.getItem('model') || 'gemma-local-model',
         systemPrompt: localStorage.getItem('systemPrompt') || 'You are a helpful AI assistant.',
@@ -69,6 +78,14 @@ document.addEventListener('DOMContentLoaded', () => {
     let nThreads = parseInt(localStorage.getItem('nThreads')) || 6;
     let nGpuLayers = parseInt(localStorage.getItem('nGpuLayers')) || 20;
 
+    // Hardware flags state
+    let nBatch = parseInt(localStorage.getItem('nBatch')) || 1024;
+    let flashAttn = localStorage.getItem('flashAttn') !== 'false'; // default true
+    let useMlock = localStorage.getItem('useMlock') !== 'false'; // default true
+    let numa = localStorage.getItem('numa') === 'true'; // default false
+    let kvQuant = localStorage.getItem('kvQuant') || 'none';
+    let hwProfile = localStorage.getItem('hwProfile') || 'auto';
+
     // Inference settings
     let maxTokens = parseInt(localStorage.getItem('maxTokens')) || 512;
     let summarizeEnabled = localStorage.getItem('summarizeEnabled') === 'true';
@@ -77,8 +94,15 @@ document.addEventListener('DOMContentLoaded', () => {
     let topK = parseInt(localStorage.getItem('topK')) || 40;
     let repeatPenalty = parseFloat(localStorage.getItem('repeatPenalty')) || 1.1;
 
+    // Hardware detection cache
+    let hwDetectionData = null;
+    let hwDetectionFetched = false;
+
     // File browser state
     let currentBrowserPath = '';
+
+    // Track whether profile changes came from user or auto-detection
+    let ignoreProfileChange = false;
 
     // Initialize UI
     apiUrlInput.value = state.apiUrl;
@@ -90,6 +114,14 @@ document.addEventListener('DOMContentLoaded', () => {
     nCtxInput.value = nCtx;
     nThreadsInput.value = nThreads;
     nGpuLayersInput.value = nGpuLayers;
+
+    // Initialize hardware flags UI
+    nBatchInput.value = nBatch;
+    flashAttnToggle.checked = flashAttn;
+    mlockToggle.checked = useMlock;
+    numaToggle.checked = numa;
+    kvQuantSelect.value = kvQuant;
+    hwProfileSelect.value = hwProfile;
 
     // Initialize inference settings UI
     maxTokensInput.value = maxTokens;
@@ -117,11 +149,58 @@ document.addEventListener('DOMContentLoaded', () => {
         repeatPenaltyValue.textContent = parseFloat(repeatPenaltyInput.value).toFixed(2);
     });
 
+    // Hardware flag inputs → auto-switch to "Custom" profile
+    const hwInputs = [nGpuLayersInput, nThreadsInput, nBatchInput];
+    const hwToggles = [flashAttnToggle, mlockToggle, numaToggle];
+
+    hwInputs.forEach(input => {
+        input.addEventListener('change', () => {
+            if (!ignoreProfileChange) {
+                hwProfileSelect.value = 'custom';
+            }
+        });
+    });
+    hwToggles.forEach(toggle => {
+        toggle.addEventListener('change', () => {
+            if (!ignoreProfileChange) {
+                hwProfileSelect.value = 'custom';
+            }
+        });
+    });
+    kvQuantSelect.addEventListener('change', () => {
+        if (!ignoreProfileChange) {
+            hwProfileSelect.value = 'custom';
+        }
+    });
+
+    // Profile dropdown change → apply profile values
+    hwProfileSelect.addEventListener('change', () => {
+        const selectedKey = hwProfileSelect.value;
+        if (selectedKey === 'custom') return; // User went manual, don't change fields
+        if (selectedKey === 'auto') {
+            // Re-apply auto-detected recommendation
+            if (hwDetectionData && hwDetectionData.recommended) {
+                applyProfileToUI(hwDetectionData.recommended);
+            }
+            return;
+        }
+        // Apply a named profile from detection data
+        if (hwDetectionData && hwDetectionData.profiles && hwDetectionData.profiles[selectedKey]) {
+            const profile = hwDetectionData.profiles[selectedKey];
+            // Named profiles don't include n_threads — use detected recommendation
+            const threads = hwDetectionData.recommended ? hwDetectionData.recommended.n_threads : 4;
+            applyProfileToUI({ ...profile, n_threads: threads });
+        }
+    });
+
     // Check connection on load
     checkConnection();
 
     // Fetch current model status on page load
     fetchModelStatus();
+
+    // Fetch hardware profile on page load (cached, runs once)
+    fetchHardwareProfile();
 
     // Event Listeners
     sendBtn.addEventListener('click', handleSendMessage);
@@ -172,6 +251,21 @@ document.addEventListener('DOMContentLoaded', () => {
         localStorage.setItem('nCtx', nCtx.toString());
         localStorage.setItem('nThreads', nThreads.toString());
         localStorage.setItem('nGpuLayers', nGpuLayers.toString());
+
+        // Save hardware flags
+        nBatch = parseInt(nBatchInput.value) || 1024;
+        flashAttn = flashAttnToggle.checked;
+        useMlock = mlockToggle.checked;
+        numa = numaToggle.checked;
+        kvQuant = kvQuantSelect.value;
+        hwProfile = hwProfileSelect.value;
+
+        localStorage.setItem('nBatch', nBatch.toString());
+        localStorage.setItem('flashAttn', flashAttn.toString());
+        localStorage.setItem('useMlock', useMlock.toString());
+        localStorage.setItem('numa', numa.toString());
+        localStorage.setItem('kvQuant', kvQuant);
+        localStorage.setItem('hwProfile', hwProfile);
 
         // Save inference settings
         maxTokens = parseInt(maxTokensInput.value) || 512;
@@ -224,14 +318,89 @@ document.addEventListener('DOMContentLoaded', () => {
         }
     });
 
+    // --- Hardware Profile Functions ---
+
+    function applyProfileToUI(profile) {
+        ignoreProfileChange = true;
+        if (profile.n_gpu_layers != null) nGpuLayersInput.value = profile.n_gpu_layers;
+        if (profile.n_threads != null) nThreadsInput.value = profile.n_threads;
+        if (profile.n_batch != null) nBatchInput.value = profile.n_batch;
+        if (profile.flash_attn != null) flashAttnToggle.checked = profile.flash_attn;
+        if (profile.use_mlock != null) mlockToggle.checked = profile.use_mlock;
+        if (profile.numa != null) numaToggle.checked = profile.numa;
+
+        // KV quantization
+        if (profile.type_k != null && profile.type_k > 0) {
+            kvQuantSelect.value = 'q8_0';
+        } else {
+            kvQuantSelect.value = 'none';
+        }
+        ignoreProfileChange = false;
+    }
+
+    async function fetchHardwareProfile() {
+        if (hwDetectionFetched) return;
+        try {
+            const response = await fetch(`${currentOrigin}/api/hardware-profile`);
+            if (!response.ok) return;
+
+            hwDetectionData = await response.json();
+            hwDetectionFetched = true;
+
+            // Show detection banner
+            const hw = hwDetectionData.hardware;
+            if (hw) {
+                hwDetectionBanner.style.display = 'block';
+
+                // Build banner text
+                let bannerParts = [];
+                if (hw.cpu_brand && hw.cpu_brand !== 'unknown') {
+                    bannerParts.push(hw.cpu_brand);
+                }
+                if (hw.physical_cores) {
+                    bannerParts.push(`${hw.physical_cores}P/${hw.logical_cores}L cores`);
+                }
+                if (hw.ram_total_gb) {
+                    bannerParts.push(`${hw.ram_total_gb} GB RAM`);
+                }
+                if (hw.gpu) {
+                    bannerParts.push(hw.gpu.name || 'GPU detected');
+                } else {
+                    bannerParts.push('No GPU');
+                }
+                hwBannerText.textContent = bannerParts.join(' · ');
+
+                // Show CPU flags
+                let flags = [];
+                if (hw.has_avx2 === true) flags.push('AVX2 ✓');
+                else if (hw.has_avx2 === false) flags.push('AVX2 ✗');
+                if (hw.has_avx512 === true) flags.push('AVX-512 ✓');
+                if (hw.has_fma === true) flags.push('FMA ✓');
+                if (hw.has_f16c === true) flags.push('F16C ✓');
+
+                if (flags.length > 0) {
+                    hwCpuFlags.style.display = 'block';
+                    hwCpuFlags.textContent = flags.join('  |  ');
+                }
+            }
+
+            // If user hasn't manually set a profile, apply auto-detection
+            if (hwProfile === 'auto' && hwDetectionData.recommended) {
+                hwProfileSelect.value = 'auto';
+                applyProfileToUI(hwDetectionData.recommended);
+            }
+
+        } catch (error) {
+            console.log('Hardware detection not available:', error.message);
+        }
+    }
+
     // Functions
     async function checkConnection() {
         statusIndicator.className = 'status-indicator';
         statusIndicator.title = 'Checking connection...';
 
         try {
-            // If apiUrl is a relative path like '/api/chat', we need to make it absolute for the connection check
-            // or just fetch it directly.
             let tagsUrl;
             if (state.apiUrl.startsWith('http')) {
                 const baseUrl = state.apiUrl.replace('/api/chat', '');
@@ -300,18 +469,6 @@ document.addEventListener('DOMContentLoaded', () => {
             sendBtn.style.opacity = '1';
             return;
         }
-
-        console.log('Request body:', {
-            model: state.model,
-            messages: messages,
-            stream: true,
-            max_tokens: maxTokens,
-            summarize: summarizeEnabled,
-            temperature: temperature,
-            top_p: topP,
-            top_k: topK,
-            repeat_penalty: repeatPenalty
-        });
 
         try {
             const response = await fetch(state.apiUrl, {
@@ -400,7 +557,7 @@ document.addEventListener('DOMContentLoaded', () => {
     }
 
     function addMessage(text, sender, isLoading = false) {
-        const id = 'msg-' + Date.now();
+        const id = 'msg-' + sender + '-' + Date.now() + '-' + Math.random().toString(36).slice(2, 7);
         const messageDiv = document.createElement('div');
         messageDiv.className = `message ${sender}`;
         messageDiv.id = id;
@@ -432,7 +589,7 @@ document.addEventListener('DOMContentLoaded', () => {
         }
 
         chatArea.appendChild(messageDiv);
-        scrollToBottom(true); // Force scroll when a new message is added
+        scrollToBottom(true);
 
         // Remove welcome message if it exists
         const welcome = document.querySelector('.welcome-message');
@@ -461,7 +618,7 @@ document.addEventListener('DOMContentLoaded', () => {
     let userScrolledUp = false;
 
     chatArea.addEventListener('scroll', () => {
-        const threshold = 100; // pixels from bottom
+        const threshold = 100;
         const atBottom = chatArea.scrollHeight - chatArea.scrollTop - chatArea.clientHeight < threshold;
         userScrolledUp = !atBottom;
     });
@@ -548,7 +705,6 @@ document.addEventListener('DOMContentLoaded', () => {
         if (!currentBrowserPath || currentBrowserPath === '/' || currentBrowserPath === 'C:\\') {
             return;
         }
-        // Handle both Unix and Windows paths
         let parentPath;
         if (currentBrowserPath.includes('\\')) {
             const parts = currentBrowserPath.split('\\');
@@ -566,7 +722,6 @@ document.addEventListener('DOMContentLoaded', () => {
         const fullPath = currentBrowserPath
             ? `${currentBrowserPath}/${fileName}`.replace(/\/\//g, '/')
             : fileName;
-        // Handle Windows paths
         const normalizedPath = currentBrowserPath.includes('\\')
             ? `${currentBrowserPath}\\${fileName}`
             : fullPath;
@@ -595,11 +750,25 @@ document.addEventListener('DOMContentLoaded', () => {
             return;
         }
 
+        // Determine KV quant values
+        let typeK = null;
+        let typeV = null;
+        if (kvQuantSelect.value === 'q8_0') {
+            typeK = 8;
+            typeV = 8;
+        }
+
         const params = {
             model_path: path,
             n_ctx: parseInt(nCtxInput.value) || 2048,
             n_threads: parseInt(nThreadsInput.value) || 6,
-            n_gpu_layers: parseInt(nGpuLayersInput.value) || 20
+            n_gpu_layers: parseInt(nGpuLayersInput.value) || 20,
+            flash_attn: flashAttnToggle.checked,
+            use_mlock: mlockToggle.checked,
+            numa: numaToggle.checked,
+            n_batch: parseInt(nBatchInput.value) || 1024,
+            type_k: typeK,
+            type_v: typeV,
         };
 
         // Show loading state
@@ -627,11 +796,17 @@ document.addEventListener('DOMContentLoaded', () => {
                 state.model = modelName;
                 localStorage.setItem('model', modelName);
 
-                // Persist settings
+                // Persist all settings
                 localStorage.setItem('modelPath', path);
                 localStorage.setItem('nCtx', params.n_ctx.toString());
                 localStorage.setItem('nThreads', params.n_threads.toString());
                 localStorage.setItem('nGpuLayers', params.n_gpu_layers.toString());
+                localStorage.setItem('nBatch', params.n_batch.toString());
+                localStorage.setItem('flashAttn', params.flash_attn.toString());
+                localStorage.setItem('useMlock', params.use_mlock.toString());
+                localStorage.setItem('numa', params.numa.toString());
+                localStorage.setItem('kvQuant', kvQuantSelect.value);
+                localStorage.setItem('hwProfile', hwProfileSelect.value);
             } else {
                 const errorMsg = data.detail || data.error || 'Failed to load model';
                 modelStatusText.textContent = `Error: ${errorMsg}`;
@@ -662,7 +837,6 @@ document.addEventListener('DOMContentLoaded', () => {
                 modelPath = data.model_path;
                 localStorage.setItem('modelPath', modelPath);
 
-                // Auto-fill model name from loaded model
                 modelNameInput.value = modelName;
                 state.model = modelName;
                 localStorage.setItem('model', modelName);
@@ -690,8 +864,23 @@ document.addEventListener('DOMContentLoaded', () => {
                 nGpuLayersInput.value = data.n_gpu_layers;
                 nGpuLayers = data.n_gpu_layers;
             }
+            if (data.n_batch) {
+                nBatchInput.value = data.n_batch;
+                nBatch = data.n_batch;
+            }
+            if (data.flash_attn != null) {
+                flashAttnToggle.checked = data.flash_attn;
+                flashAttn = data.flash_attn;
+            }
+            if (data.use_mlock != null) {
+                mlockToggle.checked = data.use_mlock;
+                useMlock = data.use_mlock;
+            }
+            if (data.numa != null) {
+                numaToggle.checked = data.numa;
+                numa = data.numa;
+            }
         } catch (error) {
-            // Silently fail — server might not be running yet
             console.log('Could not fetch model status:', error.message);
         }
     }

@@ -104,16 +104,81 @@
                     <input type="number" id="n-ctx-input" value="2048" min="128" max="32768">
                     <small>Tokens the model can see at once. Higher = more RAM.</small>
                 </div>
+
+                <hr style="border-color: var(--border-color); margin: 10px 0;">
+                <h3 style="font-size: 1rem; font-weight: 500; color: var(--text-primary);">Hardware Profile</h3>
+
+                <!-- Hardware detection banner -->
+                <div id="hw-detection-banner" class="hw-banner" style="display: none;">
+                    <div class="hw-banner-content">
+                        <span id="hw-banner-text">Detecting hardware...</span>
+                    </div>
+                    <div id="hw-cpu-flags" class="hw-flags" style="display: none;"></div>
+                </div>
+
+                <div class="form-group">
+                    <label for="hw-profile-select">Profile</label>
+                    <select id="hw-profile-select">
+                        <option value="auto">Auto-detect</option>
+                        <option value="windows_cpu">🪟 Windows (CPU)</option>
+                        <option value="windows_nvidia">🪟 Windows (NVIDIA GPU)</option>
+                        <option value="linux_cpu">🐧 Linux (CPU)</option>
+                        <option value="linux_nvidia">🐧 Linux (NVIDIA GPU)</option>
+                        <option value="macos_apple_silicon">🍏 macOS (Apple Silicon)</option>
+                        <option value="macos_intel">🍏 macOS (Intel)</option>
+                        <option value="custom">⚙️ Custom</option>
+                    </select>
+                    <small>Select a profile or let the server auto-detect your hardware.</small>
+                </div>
+
+                <div class="form-group">
+                    <label for="n-gpu-layers-input">GPU Layers (n_gpu_layers)</label>
+                    <input type="number" id="n-gpu-layers-input" value="20" min="-1" max="999">
+                    <small>0 = CPU only, -1 = offload all to GPU, 99 = Apple Silicon full.</small>
+                </div>
                 <div class="form-group">
                     <label for="n-threads-input">CPU Threads (n_threads)</label>
                     <input type="number" id="n-threads-input" value="6" min="1" max="64">
                     <small>Set to physical cores minus 1 for best performance.</small>
                 </div>
                 <div class="form-group">
-                    <label for="n-gpu-layers-input">GPU Layers (n_gpu_layers)</label>
-                    <input type="number" id="n-gpu-layers-input" value="20" min="-1" max="999">
-                    <small>0 = CPU only, -1 = offload all to GPU.</small>
+                    <label for="n-batch-input">Batch Size (n_batch)</label>
+                    <input type="number" id="n-batch-input" value="1024" min="32" max="4096" step="32">
+                    <small>Tokens processed per forward pass during prompt eval. Higher = faster prompt processing.</small>
                 </div>
+                <div class="form-group">
+                    <label class="toggle-label">
+                        <span>Flash Attention</span>
+                        <input type="checkbox" id="flash-attn-toggle" checked>
+                        <span class="toggle-slider"></span>
+                    </label>
+                    <small>Fused attention kernel — faster, uses less memory for long contexts.</small>
+                </div>
+                <div class="form-group">
+                    <label class="toggle-label">
+                        <span>Memory Lock (mlock)</span>
+                        <input type="checkbox" id="mlock-toggle" checked>
+                        <span class="toggle-slider"></span>
+                    </label>
+                    <small>Locks model in RAM — prevents page-fault stutter during generation.</small>
+                </div>
+                <div class="form-group">
+                    <label class="toggle-label">
+                        <span>NUMA Awareness</span>
+                        <input type="checkbox" id="numa-toggle">
+                        <span class="toggle-slider"></span>
+                    </label>
+                    <small>Keeps data close to processing cores. Enable on Windows/Linux, disable on macOS.</small>
+                </div>
+                <div class="form-group">
+                    <label for="kv-quant-select">KV-Cache Quantization</label>
+                    <select id="kv-quant-select">
+                        <option value="none">Off (f16 default)</option>
+                        <option value="q8_0">q8_0 (recommended for n_ctx &gt; 8k)</option>
+                    </select>
+                    <small>Reduces KV-cache memory usage ~40%. Slight quality tradeoff at very long contexts.</small>
+                </div>
+
                 <div class="form-group">
                     <button id="load-model-btn" class="primary-btn" style="width: 100%;">Load Model</button>
                     <small id="model-status-text" class="model-status">No model loaded</small>
@@ -188,7 +253,7 @@
         </div>
     </div>
 
-    <script src="script.js?v=2.1"></script>
+    <script src="script.js?v=3.0"></script>
 </body>
 
 </html>

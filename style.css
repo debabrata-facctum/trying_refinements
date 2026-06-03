@@ -189,6 +189,18 @@ body {
     color: white;
 }
 
+.message.user .message-content p,
+.message.user .message-content span,
+.message.user .message-content li,
+.message.user .message-content code {
+    color: white;
+}
+
+.message.user .message-content {
+    min-height: 20px;
+    word-break: break-word;
+}
+
 /* Markdown Styles */
 .message-content pre {
     background-color: #0d1117;
@@ -626,4 +638,63 @@ textarea {
 .form-group label span {
     color: var(--accent-color);
     font-weight: 500;
+}
+
+
+/* Hardware Detection Banner */
+.hw-banner {
+    background-color: rgba(88, 166, 255, 0.08);
+    border: 1px solid rgba(88, 166, 255, 0.2);
+    border-radius: 8px;
+    padding: 12px 14px;
+    margin-bottom: 4px;
+}
+
+.hw-banner-content {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+
+.hw-banner-content span {
+    font-size: 0.82rem;
+    color: var(--text-primary);
+    font-weight: 400;
+    line-height: 1.4;
+}
+
+.hw-flags {
+    margin-top: 6px;
+    font-size: 0.75rem;
+    color: var(--text-secondary);
+    font-family: 'SFMono-Regular', Consolas, 'Liberation Mono', Menlo, monospace;
+    letter-spacing: 0.3px;
+}
+
+/* Profile Dropdown */
+.form-group select {
+    background-color: var(--input-bg);
+    border: 1px solid var(--border-color);
+    border-radius: 6px;
+    padding: 10px;
+    color: var(--text-primary);
+    font-family: var(--font-family);
+    font-size: 0.95rem;
+    outline: none;
+    transition: border-color 0.2s ease;
+    cursor: pointer;
+    -webkit-appearance: none;
+    appearance: none;
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%238b949e' stroke-width='2'%3E%3Cpolyline points='6 9 12 15 18 9'/%3E%3C/svg%3E");
+    background-repeat: no-repeat;
+    background-position: right 12px center;
+    padding-right: 36px;
+}
+
+.form-group select:focus {
+    border-color: var(--accent-color);
+}
+
+.form-group select:hover {
+    border-color: var(--text-secondary);
 }

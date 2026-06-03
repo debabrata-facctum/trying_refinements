@@ -10,6 +10,7 @@ from llama_cpp import Llama
 from pydantic import BaseModel
 from typing import List, Optional, Literal
 from context_manager import ContextManager
+from hardware_detector import run_detection, get_recommendation_for_ctx
 
 app = FastAPI(title="Local LLM Server")
 
@@ -41,11 +42,19 @@ model_state = {
     "n_ctx": 2048,
     "n_threads": 6,
     "n_gpu_layers": 20,
+    "flash_attn": True,
+    "use_mlock": True,
+    "numa": False,
+    "n_batch": 1024,
+    "type_k": None,
+    "type_v": None,
     "status": "not_loaded"
 }
 
 
-def load_model(path=None, n_ctx=2048, n_threads=6, n_gpu_layers=20):
+def load_model(path=None, n_ctx=2048, n_threads=6, n_gpu_layers=20,
+               flash_attn=True, use_mlock=True, numa=None, n_batch=None,
+               type_k=None, type_v=None):
     global llm, model_state
     target_path = path or model_state["model_path"]
 
@@ -60,21 +69,51 @@ def load_model(path=None, n_ctx=2048, n_threads=6, n_gpu_layers=20):
         llm = None
         gc.collect()
 
+    # Auto-detect platform defaults if not explicitly set
+    system = platform.system()
+    if numa is None:
+        numa = system in ("Windows", "Linux")
+    if n_batch is None:
+        n_batch = 512 if system == "Darwin" else 1024
+
     model_state["status"] = "loading"
     print(f"Loading model from {target_path}...")
+    print(f"  Params: n_ctx={n_ctx}, n_threads={n_threads}, n_gpu_layers={n_gpu_layers}")
+    print(f"  Flags:  flash_attn={flash_attn}, use_mlock={use_mlock}, numa={numa}, n_batch={n_batch}")
+    if type_k is not None:
+        print(f"  KV Quant: type_k={type_k}, type_v={type_v}")
+
     try:
+        # Build kwargs for optional parameters
+        kwargs = {}
+        if type_k is not None:
+            kwargs["type_k"] = type_k
+        if type_v is not None:
+            kwargs["type_v"] = type_v
+
         llm = Llama(
             model_path=target_path,
             n_ctx=n_ctx,
             n_threads=n_threads,
             n_gpu_layers=n_gpu_layers,
-            verbose=False
+            flash_attn=flash_attn,
+            use_mlock=use_mlock,
+            numa=numa,
+            n_batch=n_batch,
+            verbose=False,
+            **kwargs
         )
         model_state.update({
             "model_path": target_path,
             "n_ctx": n_ctx,
             "n_threads": n_threads,
             "n_gpu_layers": n_gpu_layers,
+            "flash_attn": flash_attn,
+            "use_mlock": use_mlock,
+            "numa": numa,
+            "n_batch": n_batch,
+            "type_k": type_k,
+            "type_v": type_v,
             "status": "loaded"
         })
         print("Model loaded successfully!")
@@ -104,6 +143,12 @@ class LoadModelRequest(BaseModel):
     n_ctx: int = 2048
     n_threads: int = 6
     n_gpu_layers: int = 20
+    flash_attn: bool = True
+    use_mlock: bool = True
+    numa: Optional[bool] = None
+    n_batch: Optional[int] = None
+    type_k: Optional[int] = None
+    type_v: Optional[int] = None
 
 class BrowseEntry(BaseModel):
     name: str
@@ -181,6 +226,52 @@ async def browse(path: Optional[str] = Query(default=None)):
         entries=entries
     )
 
+@app.get("/api/hardware-profile")
+async def get_hardware_profile():
+    """
+    Return detected hardware info and recommended llama-cpp settings.
+    Detection runs once and is cached for the server lifetime.
+    """
+    try:
+        detection = run_detection()
+        return detection
+    except Exception as e:
+        print(f"ERROR: Hardware detection failed: {e}")
+        # Return safe defaults even if detection fails
+        return {
+            "hardware": {
+                "cpu_brand": "unknown",
+                "physical_cores": None,
+                "logical_cores": os.cpu_count() or 4,
+                "architecture": platform.machine(),
+                "is_apple_silicon": False,
+                "has_avx": None,
+                "has_avx2": None,
+                "has_avx512": None,
+                "has_fma": None,
+                "has_f16c": None,
+                "ram_total_gb": None,
+                "ram_available_gb": None,
+                "gpu": None,
+                "platform": platform.system(),
+            },
+            "recommended_profile": "windows_cpu" if platform.system() == "Windows" else "linux_cpu",
+            "recommended": {
+                "n_gpu_layers": 0,
+                "n_threads": 4,
+                "flash_attn": True,
+                "use_mlock": True,
+                "numa": platform.system() != "Darwin",
+                "n_batch": 1024,
+                "type_k": None,
+                "type_v": None,
+            },
+            "max_safe_n_ctx": 2048,
+            "profiles": {},
+            "error": str(e),
+        }
+
+
 @app.post("/api/load-model")
 async def load_model_endpoint(request: LoadModelRequest):
     """Load a new model with specified parameters."""
@@ -201,7 +292,13 @@ async def load_model_endpoint(request: LoadModelRequest):
             path=resolved_path,
             n_ctx=request.n_ctx,
             n_threads=request.n_threads,
-            n_gpu_layers=request.n_gpu_layers
+            n_gpu_layers=request.n_gpu_layers,
+            flash_attn=request.flash_attn,
+            use_mlock=request.use_mlock,
+            numa=request.numa,
+            n_batch=request.n_batch,
+            type_k=request.type_k,
+            type_v=request.type_v,
         )
         if result is None:
             raise HTTPException(

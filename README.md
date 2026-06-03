@@ -10,19 +10,30 @@ Built with **FastAPI** + **llama-cpp-python** on the backend and a clean dark-th
 
 ## Why This Exists
 
-Most local LLM tools (Ollama, text-generation-webui, LM Studio) hide the model configuration behind abstractions. You get a chat box, but no direct control over how the model actually runs on your hardware. LocalMind gives you that control.
+Most local LLM tools (Ollama, text-generation-webui, LM Studio) hide the model configuration behind abstractions. You get a chat box, but no direct control over how the model actually runs on your hardware. Worse — they use generic default settings that leave performance on the table. Your CPU's instruction sets, your RAM capacity, your GPU's VRAM — none of it is leveraged unless you dig through CLI flags or config files.
 
-**The core idea:** a lightweight chat UI where you explicitly configure the inference parameters — context length, CPU thread allocation, GPU layer offloading — and see the effect immediately. No guessing, no hidden defaults, no restarting.
+LocalMind gives you that control, without requiring you to be an expert.
+
+**The core idea:** a lightweight chat UI that **auto-detects your hardware** and applies platform-optimized inference settings out of the box — then lets you fine-tune every parameter visually if you want to. Flash attention, memory locking, NUMA-aware scheduling, KV-cache quantization, batch sizing — all exposed and tunable from a single settings panel.
+
+The result: you get the maximum performance your specific machine can deliver, whether that's a 13th Gen Intel laptop with no GPU, a Linux workstation with an RTX 4090, or a MacBook Pro with Apple Silicon.
 
 ### What makes this different
 
 | Feature | Ollama / LM Studio | LocalMind |
 |---------|--------------------:|----------:|
-| Context window control | Hidden or limited | You set `n_ctx` directly (128 → 8192+) |
-| Thread allocation | Automatic (opaque) | You choose exactly how many CPU threads to dedicate |
+| Hardware detection | None — one-size-fits-all defaults | Auto-detects CPU, RAM, GPU, instruction sets on startup |
+| Optimization profiles | Not available | Platform-specific profiles (Win/Linux/macOS) with one-click apply |
+| Context window control | Hidden or limited | You set `n_ctx` directly (128 → 32768) |
+| Thread allocation | Automatic (opaque) | Auto-detected physical cores, fully overridable |
 | GPU layer offloading | All-or-nothing | Fine-grained: 0 (CPU only), partial, or -1 (offload all) |
+| Flash attention | Hidden or unavailable | Toggle on/off from the UI |
+| Memory locking | Not configurable | Toggle on/off — eliminates page-fault stutter |
+| NUMA awareness | Not exposed | Auto-enabled on Intel hybrid-core / multi-socket systems |
+| KV-cache quantization | Not available | q8_0 for large contexts — saves ~40% memory |
+| Batch size control | Hidden | Configurable per-platform (1024 Win/Linux, 512 Mac) |
 | Model loading | Restart required | Hot-swap from the UI, no server restart |
-| Context management | Silent truncation | Smart trimming with optional summarization |
+| Context management | Silent truncation | Smart trimming with optional rolling summarization |
 | Configuration | Config files / CLI flags | Visual settings panel with immediate feedback |
 
 ---
@@ -104,6 +115,24 @@ Browser (localhost:8080)          FastAPI Server (server.py)
 ### System prompt handling
 
 Many GGUF models are picky about the `system` role in chat messages. The server automatically merges system prompts into the first user message for maximum compatibility across model families (Llama, Mistral, Gemma, etc.).
+
+### Hardware auto-detection
+
+On startup, the server probes your system using a layered detection approach:
+
+```
+Layer A: psutil + py-cpuinfo (fast, detailed)
+Layer B: OS native commands (wmic, /proc, sysctl, nvidia-smi)
+Layer C: Safe defaults (if everything else fails)
+```
+
+Detection covers:
+- CPU: physical/logical core count, brand, instruction flags (AVX2, AVX-512, FMA, F16C)
+- RAM: total and available memory
+- GPU: NVIDIA (via nvidia-smi) or Apple Metal (via system_profiler)
+- OS: platform, architecture
+
+Results are cached in memory (runs once per server lifetime) and served via `/api/hardware-profile`. The frontend uses this to auto-select the best optimization profile and pre-fill all hardware settings.
 
 ### Streaming
 
@@ -200,12 +229,43 @@ The summary call is fast (~2–5 seconds) because it only processes the old summ
 
 All configurable from the Settings modal in the UI. Settings persist in `localStorage` — they survive page refreshes.
 
+### Hardware Profile (Auto-Detected)
+
+On first load, the server probes your hardware (CPU, RAM, GPU, instruction sets) and recommends optimal settings. You can accept the recommendation, pick a different profile, or go fully custom.
+
+| Profile | Description |
+|---------|-------------|
+| 🪟 Windows (CPU) | ngl=0, threads=P-cores-1, flash=on, mlock=on, numa=on, batch=1024 |
+| 🪟 Windows (NVIDIA GPU) | ngl=-1, same as above |
+| 🐧 Linux (CPU) | Same as Windows CPU |
+| 🐧 Linux (NVIDIA GPU) | ngl=-1, same as above |
+| 🍏 macOS (Apple Silicon) | ngl=99, batch=512, mlock=on, no numa |
+| 🍏 macOS (Intel) | ngl=0, batch=512, mlock=on, no numa |
+| ⚙️ Custom | All fields editable — auto-selected when you change any individual field |
+
+### Model Parameters
+
 | Parameter | Default | Range |
 |-----------|---------|-------|
 | **Model Path** | — | Any `.gguf` file on your system |
-| **n_ctx** | 2048 | 128 – 8192+ |
-| **n_threads** | 6 | 1 – your core count |
-| **n_gpu_layers** | 20 | 0, 1–99, or -1 |
+| **n_ctx** | 2048 | 128 – 32768 |
+
+### Hardware Optimization Flags
+
+| Parameter | Default | Range | Purpose |
+|-----------|---------|-------|---------|
+| **n_gpu_layers** | 0 (auto) | -1 – 999 | GPU layer offloading |
+| **n_threads** | auto-detected | 1 – 64 | CPU threads for inference |
+| **n_batch** | 1024 (512 on Mac) | 32 – 4096 | Tokens per forward pass during prompt eval |
+| **Flash Attention** | ON | ON/OFF | Fused attention kernel — faster, less memory |
+| **Memory Lock** | ON | ON/OFF | Lock model in RAM — no page-fault stutter |
+| **NUMA** | ON (Win/Linux) | ON/OFF | NUMA-aware scheduling for hybrid-core CPUs |
+| **KV Quantization** | Off | Off / q8_0 | Quantize KV-cache — saves ~40% memory at >8k context |
+
+### Inference Parameters
+
+| Parameter | Default | Range |
+|-----------|---------|-------|
 | **Max Response Tokens** | 512 | 64 – 4096 |
 | **Temperature** | 0.7 | 0.0 – 2.0 |
 | **Top P** | 0.9 | 0.05 – 1.0 |
@@ -395,6 +455,7 @@ Penalizes tokens that have already appeared in the generated text. The penalty m
 |--------|----------|---------|
 | `GET` | `/api/tags` | Connection health check |
 | `GET` | `/api/browse?path=` | Browse filesystem for `.gguf` files |
+| `GET` | `/api/hardware-profile` | Auto-detected hardware info + recommended settings |
 | `POST` | `/api/load-model` | Load a model with given parameters |
 | `GET` | `/api/model-status` | Current model state (loaded/error/not_loaded) |
 | `POST` | `/api/chat` | Send messages, receive inference response |
@@ -425,8 +486,14 @@ Penalizes tokens that have already appeared in the generated text. The penalty m
 {
   "model_path": "C:/models/gemma-3-4b-it-Q4_K_M.gguf",
   "n_ctx": 4096,
-  "n_threads": 6,
-  "n_gpu_layers": 20
+  "n_threads": 5,
+  "n_gpu_layers": 0,
+  "flash_attn": true,
+  "use_mlock": true,
+  "numa": true,
+  "n_batch": 1024,
+  "type_k": null,
+  "type_v": null
 }
 ```
 
@@ -440,10 +507,12 @@ Penalizes tokens that have already appeared in the generated text. The penalty m
 Web_local_llm/
 ├── server.py             # FastAPI backend — routing, model loading, chat
 ├── context_manager.py    # Context trimming + optional summarization logic
+├── hardware_detector.py  # Cross-platform hardware detection + profile engine
 ├── index.html            # Chat UI with settings modal and file browser
-├── script.js             # Frontend logic — streaming, model management
+├── script.js             # Frontend logic — streaming, model management, profiles
 ├── style.css             # Dark theme (GitHub-dark inspired)
 ├── requirements.txt      # Python dependencies (pinned versions)
+├── INSTALL_LLAMA_CPP.md  # Platform-specific llama-cpp-python installation guide
 ├── logic.md              # Internal design docs for development reference
 └── README.md             # This file
 ```
@@ -485,7 +554,7 @@ Set **GPU Layers** to `0` in Settings. This forces CPU-only inference — slower
 
 - Conversation persistence with SQLite (multi-chat sidebar, "New Chat" button)
 - Bundle JS dependencies locally for true offline use (no CDN needed)
-- Hardware auto-detection — suggest optimal `n_threads` and `n_gpu_layers` on startup
+- ~~Hardware auto-detection — suggest optimal `n_threads` and `n_gpu_layers` on startup~~ ✅ Done
 - Structured logging with Python `logging` module
 
 ---
