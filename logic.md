@@ -1,294 +1,318 @@
-# LocalMind — Development Logic
+# LocalMind — Development Logic (v2)
 
-This file documents the design decisions, logic, and implementation plans for features in development.
+Design decisions and implementation notes for the v2. The engine-level logic
+(context management, response-length hint) is carried over from v1 unchanged and
+documented here for completeness. The v2-specific sections cover the UI rebuild
+and the backend additions that feed it.
 
 ---
 
-## Context Manager
+## v2 Overview
+
+v2 is a front-end rebuild of LocalMind onto a llama.cpp-style shell (sidebar +
+topbar + floating composer + overlays), plus small backend additions to power
+new live-feedback features. No v1 capability was removed.
+
+> **Design lineage:** the v2 look is heavily inspired by the web UI bundled with
+> llama.cpp's `llama-server`. It's an independent reimplementation (our own
+> HTML/CSS/JS), not a copy of their code — see the Acknowledgments in the README.
+
+| Area | v1 | v2 |
+|------|----|----|
+| Page model | `index.html` + `script.js` + `style.css` | Single page: `index.html` + `app.js` + `styles.css` |
+| Layout | Header + centered chat + input bar | Sidebar (collapsible rail) + topbar + floating composer |
+| Settings | One large modal | In-app overlay with **General** + **Sampling** tabs |
+| Connection | Binary dot (reachable or not) | **Three-state** dot (loaded / no-model / disconnected) |
+| Per-turn info | None | **Token stats** per message (user + assistant) |
+| Context display | None | **Real-token usage ring** + popover |
+| Model details | None | **Model Info card** with GGUF specs + runtime config |
+| Copy / edit | None | Copy toast; edit-and-resend on user messages |
+| Chat stream | `{done:true}` | `{done:true, stats:{...}}` |
+| model-status | runtime config only | + GGUF specs (`training_ctx`, `n_params`, ...) |
+
+---
+
+## Front-end architecture (v2)
+
+### Single page, class-driven state
+
+The whole UI lives in one `index.html`. State is expressed through classes on the
+root `#app`:
+
+- `.collapsed` — sidebar shrinks to the icon rail (toggled from the topbar).
+- `.generating` — send button becomes a stop control and the "Generating…" dots show.
+
+Overlays (`#settingsOverlay`, `#modelOverlay`, `#file-browser-modal`) use a shared
+`.overlay` + `.open` pattern. `app.js` toggles `.open`; CSS handles display.
+
+### Collapsible sidebar → icon rail
+
+**Decision:** collapse to a 56px rail instead of hiding the sidebar entirely.
+
+**Reasoning:** fully hiding removes navigation and branding; a rail keeps New chat /
+Settings reachable and keeps the brand present. When collapsed:
+- `.brand-word` (LocalMind) is hidden, `.brand-mark` ("LM" monogram) is shown.
+- `.nav-label` spans hide, leaving centered icons; `title` attributes provide tooltips.
+
+A CSS specificity note: `.field > label { display:block }` was overriding
+`.toggle-label { display:flex }`, collapsing toggle pills. Fixed by raising the
+toggle selector to `.field > label.toggle-label`.
+
+### Settings as an overlay with tabs
+
+**Decision:** in-app overlay (not a separate page/route), with only **General** and
+**Sampling** tabs.
+
+**Reasoning:** the server serves a single `index.html`; an overlay keeps everything
+client-side with no reload. Import/Export and the "+" tools menu from the reference
+mock were intentionally dropped (no backend for them). Every v1 setting is folded
+into these two tabs so nothing is lost.
+
+### Message rendering
+
+`addMessage(text, sender)` builds either a `.msg.user` (bubble + copy/edit actions)
+or a `.msg.assistant` (`.md-body` markdown + copy action). Markdown is rendered with
+`marked` and highlighted with `highlight.js`. Assistant "regenerate" was removed as
+not relevant to the current flow.
+
+**Edit-and-resend:** editing a user message removes that message and everything after
+it (DOM + `state.history`), recomputes the running token total from the remaining
+messages' `data-tokens`, and drops the text back into the composer.
+
+### Cache-busting
+
+`app.js` and `styles.css` are referenced with `?v=N`. Bump `N` on change so browsers
+reload. `index.html` is unversioned — a one-time hard reload is expected after HTML
+edits.
+
+---
+
+## End-of-answer stats
+
+### Server
+
+In `/api/chat`, the server:
+1. Captures the last user message and counts its tokens with `count_tokens()`
+   (`llm.tokenize(...)`, with a word-based fallback if no model/tokenizer).
+2. Times generation with `time.perf_counter()` and accumulates the streamed text.
+3. Counts completion tokens from the accumulated text.
+4. Emits a final chunk: `{"done": true, "stats": {user_tokens, completion_tokens, elapsed_s, tokens_per_s}}`.
+
+The non-streaming path returns the same `stats` object in its JSON body.
+
+### Client
+
+`handleSendMessage()` keeps references to the current user + assistant message
+elements. On the final chunk it calls `renderStats()`:
+- user message → a `.meta-row` with the token count, and `data-tokens` for later recompute.
+- assistant message → a `.answer-footer` with a model pill and `tokens / elapsed_s / tokens_per_s`.
+
+**Why re-tokenize the completion instead of counting stream deltas:** stream deltas
+don't map 1:1 to tokens; tokenizing the final text gives an accurate count.
+
+**Caveat:** `user_tokens` is the last user message alone, not the full prompt
+(system + history) sent to the model. It intentionally mirrors the per-message
+display in the reference UI.
+
+---
+
+## Context-usage meter (v2)
+
+### Decision: real tokenizer counts, no estimation
+
+v1 had no meter. An early v2 draft used a `words × 1.3` client estimate — inaccurate.
+Replaced with real counts: the client accumulates `stats.user_tokens +
+stats.completion_tokens` per turn into `contextTokens`, and displays
+`contextTokens / n_ctx`.
+
+- Reset to 0 on **New chat** (also calls `/api/reset-context`).
+- Gated on `modelLoaded`: shows **`0 / 0`** and an empty ring when no model is loaded,
+  so a default `n_ctx` never appears as if a model were configured.
+- The ring is an SVG progress circle driven by `stroke-dashoffset`; amber ≥ 75%, red ≥ 90%.
+
+**Caveat:** this sums the exchanged message tokens (the conversation size from the
+tokenizer). It does not add system-prompt tokens or llama.cpp's internal prompt
+formatting overhead, so it can read slightly lower than the engine's exact KV fill.
+It's tokenizer-accurate for conversation content and library-free.
+
+---
+
+## Connection status (three-state)
+
+`/api/tags` only reports reachability, so v1's dot was effectively always "on".
+v2 combines reachability with model state:
+
+```
+fetch /api/tags:
+  not ok            → red    "Disconnected"
+  ok → fetch /api/model-status:
+       status==loaded → green "Model loaded"
+       else           → amber "No model loaded"
+```
+
+Refreshed on startup, after saving settings, and immediately after a successful load.
+
+---
+
+## Model spec introspection (v2)
+
+### Decision: read from the loaded model, expose via model-status
+
+We only show the info card after a model loads, so the loaded `Llama` object is the
+simplest source (vs. parsing GGUF headers without loading — a possible future
+enhancement for previewing unloaded files).
+
+### Implementation
+
+`extract_model_specs(model, path)` reads:
+- `training_ctx` ← `n_ctx_train()`
+- `n_embd`, `n_vocab` ← model introspection
+- `n_params` ← parameter count
+- `file_size_bytes` ← `os.path.getsize(path)` (reliable), tensor `size()` as fallback
+- `desc` ← model description string
+
+Every read is attempted against both the high-level `Llama` object and its internal
+`_model` handle via a `_first_ok(*getters)` helper, because method names vary across
+`llama-cpp-python` versions. Anything unavailable degrades to `None` → "—" in the UI.
+
+Specs are stored in `model_state` at load time and returned by `/api/model-status`.
+The card separates **model specs** (from the GGUF) from **runtime config** (what it
+was loaded with), and shows "—" for all of them until `status == "loaded"`.
+
+---
+
+## Static file serving (v2)
+
+`server.py` computes `BASE_DIR = os.path.abspath(os.path.dirname(__file__))` and serves
+`index.html` and static assets relative to it (v1 used a CWD-relative
+`FileResponse("index.html")`). This lets the server run correctly regardless of the
+directory it's launched from. Path-traversal protection (files must stay inside
+`BASE_DIR`) and the allowed-extension whitelist are retained.
+
+---
+
+## Context Manager (carried over from v1)
 
 ### Problem
 
-Every chat request sends the entire conversation history to the model. With unlimited response length and no trimming, an 8k context window fills up in ~8-10 exchanges. The model then silently truncates or produces garbage output.
+Every chat request sends the entire conversation history to the model. Without
+trimming, an 8k context window fills up in ~8–10 exchanges and the model silently
+truncates or produces garbage.
 
 ### Solution
 
-A two-layer context management system:
-1. **Sliding window** (always active) — drops oldest messages when budget is exceeded
-2. **Summarization** (opt-in toggle) — compresses dropped messages into a rolling summary before discarding them
+Two layers:
+1. **Sliding window** (always active) — drop oldest messages when budget is exceeded.
+2. **Summarization** (opt-in) — compress dropped messages into a rolling summary first.
 
-### Design Decisions
+### Design decisions
 
 | Decision | Choice | Reasoning |
 |----------|--------|-----------|
-| Where to trim | Server-side | Has access to `llm.tokenize()` for exact token counts |
-| `max_tokens` required | Yes (default 512) | Without it, budget can't be calculated deterministically |
-| Summary toggle | Opt-in (OFF by default) | Summarization adds latency; not everyone wants it |
-| n_ctx < 3000 | Sliding window only, toggle ignored | Too little room for summary to be useful |
-| n_ctx ≥ 3000 | Full logic (sliding window + optional summary) | Enough headroom for summary to add value |
-| Drop granularity | Complete message pairs (user + assistant) | Never split a message mid-content |
-| Summary style | Rolling (old_summary + newly_dropped → updated_summary) | Avoids re-summarizing entire history each time |
+| Where to trim | Server-side | Has `llm.tokenize()` for exact counts |
+| `max_tokens` required | Yes (default 512) | Budget can't be computed without it |
+| Summary toggle | Opt-in (OFF) | Summarization adds latency |
+| n_ctx < 3000 | Sliding window only | Too little room for summary to help |
+| n_ctx ≥ 3000 | Full logic | Enough headroom for summary value |
+| Drop granularity | Complete pairs | Never split a message |
+| Summary style | Rolling | Avoids re-summarizing whole history |
 
-### Budget Allocation (after trim)
+### Budget allocation (after trim)
 
 ```
 Total budget = n_ctx - max_tokens (100%)
-
-After a trim event, the budget is split:
-  System prompt:    ~1%  (fixed, small)
-  Summary:          10%  (rolling compressed context)
-  Protected zone:   30%  (recent exchanges, verbatim)
-  Headroom:         ~59% (free space for new messages)
+  System prompt:  ~1%
+  Summary:        10%  (when enabled)
+  Protected zone: 30%  (recent pairs, verbatim)
+  Headroom:       ~59% (free for new messages)
 ```
 
-This guarantees ~60% headroom after every trim, regardless of context window size.
-
-### Summary Token Cap
+### Summary token cap
 
 ```python
 if n_ctx < 4096:
     summary_cap = min(300, budget // 10)
 else:
-    summary_cap = budget // 10   # no upper cap, scales freely
+    summary_cap = budget // 10   # scales freely
 ```
 
-| n_ctx | budget | summary cap |
-|-------|--------|-------------|
-| 3072  | 2560   | 256         |
-| 3584  | 3072   | 300         |
-| 4096  | 3584   | 358         |
-| 8192  | 7680   | 768         |
-| 16384 | 15360  | 1536        |
+### Protected zone (token-budgeted)
 
-### Protected Zone (Token-Budgeted)
+30% of the input budget, filled newest→oldest until full; always at least one pair.
+Short exchanges protect more pairs, long exchanges fewer — always leaving ~60%
+headroom after a trim.
 
-The protected zone is NOT a fixed number of messages. It's a **token budget** — 30% of the total input budget.
-
-```python
-protected_budget = budget * 0.30
-
-# Fill from newest to oldest, stop when budget is full
-protected = []
-tokens_used = 0
-for pair in reversed(message_pairs):
-    pair_tokens = tokenize(pair)
-    if tokens_used + pair_tokens > protected_budget:
-        break
-    protected.insert(0, pair)
-    tokens_used += pair_tokens
-```
-
-**Why token-budgeted instead of fixed count:**
-
-A fixed "last 3 pairs" could consume anywhere from 500 to 3072 tokens depending on message length. On a 4k context window, 3 maxed-out responses would eat 86% of the budget — leaving almost no headroom after a trim.
-
-With 30% budget allocation, the protected zone adapts:
-- Short exchanges → more pairs fit (5-7 exchanges protected)
-- Long exchanges → fewer pairs fit (1-2 exchanges protected)
-- Always leaves exactly 60% headroom after trim (100% - 30% protected - 10% summary)
-
-**Guaranteed minimum:** at least 1 pair (the most recent exchange) is always protected, even if it alone exceeds 30%. This ensures the model always sees the last user message + response.
-
-| n_ctx | budget | protected budget (30%) | typical pairs protected |
-|-------|--------|----------------------|------------------------|
-| 3072  | 2560   | 768                  | 2-3 exchanges          |
-| 4096  | 3584   | 1075                 | 3-4 exchanges          |
-| 8192  | 7680   | 2304                 | 5-7 exchanges          |
-| 16384 | 15360  | 4608                 | 10-15 exchanges        |
-
-### Logic Flow
+### Logic flow
 
 ```
-1. Request arrives with messages + summarize flag + max_tokens
-
-2. Calculate budget:
-   budget = n_ctx - max_tokens
-   threshold = budget * 0.75
-
-3. Tokenize all messages, get total
-
-4. If total ≤ threshold → send as-is (fast path, most common)
-
-5. If total > threshold → determine mode:
-   a. n_ctx < 3000 OR toggle OFF → SLIDING WINDOW
-      - Keep system prompt
-      - Fill from newest to oldest until budget full
-      - Drop the rest
-      - Final: [system] + [newest messages that fit]
-
-   b. n_ctx ≥ 3000 AND toggle ON → SUMMARIZE + PROTECT
-      - Calculate protected_budget = budget * 0.30
-      - Fill protected zone from newest pairs until protected_budget full
-        (always include at least 1 pair minimum)
-      - Everything else = to_summarize
-      - Calculate summary_cap:
-        if n_ctx < 4096: min(300, budget // 10)
-        else: budget // 10
-      - Generate summary:
-        input = old_summary (if exists) + to_summarize messages
-        prompt = "Summarize preserving key facts and decisions"
-        output capped at summary_cap tokens
-      - Cache the summary
-      - Final: [system] + [summary as system msg] + [protected pairs]
-
-6. Pass final messages to llm.create_chat_completion(max_tokens=max_tokens, stream=True)
+1. Request arrives (messages + summarize flag + max_tokens)
+2. budget = n_ctx - max_tokens; threshold = budget * 0.75
+3. Tokenize all messages
+4. total ≤ threshold → send as-is (fast path)
+5. total > threshold:
+   a. n_ctx < 3000 OR toggle OFF → sliding window
+   b. n_ctx ≥ 3000 AND toggle ON → summarize + protect
+6. Pass final messages to create_chat_completion(...)
 ```
 
-### Summarization Frequency
+### Summarization
 
-NOT time-based or every-K-messages. Event-driven:
-- Triggers only when messages are about to be dropped
-- Batched: when threshold hit, drop enough to get back under budget (not just 1 message)
-- Cached: same summary reused until new messages get dropped
-- Rolling: when new messages drop, feed old_summary + new_drops → updated_summary
+Event-driven (only when messages are about to drop), batched, cached, and rolling
+(`old_summary + newly_dropped → updated_summary`). The summary call uses
+`stream=False` and `max_tokens = summary_cap`.
 
-### Summarization Prompt
+Prompt:
 
 ```
-"Here is the previous conversation summary: {old_summary}
-
-Here are additional messages to incorporate:
-{newly_dropped_messages}
-
-Write an updated summary in 2-3 sentences. Preserve key facts, decisions, and context that would help continue the conversation."
+Here is the previous conversation summary: {old_summary}
+Here are additional messages to incorporate: {newly_dropped_messages}
+Write an updated summary in 2-3 sentences. Preserve key facts, decisions, and
+context that would help continue the conversation.
 ```
 
-Summary call parameters:
-- max_tokens = summary_cap
-- stream = False (we need the full result before proceeding)
-
-### Edge Cases
+### Edge cases
 
 | Case | Handling |
 |------|----------|
-| Single message exceeds entire budget | Can't happen if max_tokens is set (response capped) |
-| Threshold falls mid-message | Drop in complete pairs, never split |
-| n_ctx < 3000 with toggle ON | Ignore toggle, use sliding window |
-| Summary cache stale | Invalidated when new messages get dropped |
-| First request (no history) | Fits in budget, no trimming |
-| User clears chat | Reset summary cache |
-| Last pair alone exceeds 30% budget | Always protect at least 1 pair (override budget) |
-| Protected zone has 0 pairs (impossible) | Guaranteed minimum of 1 pair |
-
-### Implementation Plan
-
-**File: `context_manager.py`**
-
-```python
-class ContextManager:
-    def __init__(self):
-        self.summary_cache = ""  # rolling summary text
-        self.summarized_count = 0  # how many messages have been summarized
-
-    def trim_messages(self, messages, n_ctx, max_tokens, summarize_enable
-        """
-        Main entry point. Returns trimmed message list ready for inference.
-        
-        Args:
-            messages: list of {"role": str, "content": str}
-            n_ctx: context window size
-            max_tokens: response token cap
-            summarize_enabled: bool from frontend toggle
-            llm: Llama instance (needed for tokenize + summarization)
-        
-        Returns:
-            list of messages that fit within budget
-        """
-        pass
-
-    def _tokenize_count(self, text, llm):
-        """Count tokens for a string using the model's tokenizer."""
-        pass
-
-    def _sliding_window(self, messages, budget, llm):
-        """Keep newest messages that fit within budget."""
-        pass
-
-    def _summarize_and_protect(self, messages, budget, summary_cap, llm):
-        """Summarize old messages, keep recent ones verbatim."""
-        pass
-
-    def _generate_summary(self, old_summary, new_messages, summary_cap, llm):
-        """Run inference to produce/update the rolling summary."""
-        pass
-
-    def reset(self):
-        """Clear summary cache (called when user starts new chat)."""
-        self.summary_cache = ""
-        self.summarized_count = 0
-```
-
-**Changes to `server.py`:**
-- Import `ContextManager`
-- Instantiate globally: `ctx_manager = ContextManager()`
-- In `/api/chat`: call `ctx_manager.trim_messages()` before `create_chat_completion()`
-- Add `max_tokens` and `summarize` fields to `ChatRequest` model
-
-**Changes to `script.js`:**
-- Send `max_tokens` and `summarize` in the request body
-- Read from localStorage (persisted settings)
-
-**Changes to `index.html`:**
-- Add `max_tokens` slider in settings (range: 128–2048, default 512)
-- Add "Summarize old context" toggle switch
-
-**Changes to `style.css`:**
-- Toggle switch styles
-
-### Frontend Settings Addition
-
-```
-| Parameter | Default | Range |
-|-----------|---------|-------|
-| max_tokens | 512 | 128 – 2048 |
-| Summarize old context | OFF | ON/OFF toggle |
-```
+| Single message exceeds budget | Can't happen if max_tokens is set |
+| Threshold mid-message | Drop complete pairs only |
+| n_ctx < 3000 with toggle ON | Ignore toggle → sliding window |
+| Summary cache stale | Invalidated when new messages drop |
+| First request | Fits, no trimming |
+| New chat | Reset summary cache (`/api/reset-context`) |
+| Last pair > 30% | Always protect ≥ 1 pair |
 
 ---
 
-## Response Length Hint
+## Response Length Hint (carried over from v1)
 
 ### Problem
 
-When `max_tokens` is set, the model has no awareness of the limit. It generates freely until the hard cap cuts it off mid-sentence, resulting in abrupt incomplete answers.
+With a hard `max_tokens` cap, the model has no awareness of the limit and gets cut
+off mid-sentence.
 
 ### Solution
 
-Inject a dynamic length instruction into the system prompt on every request. The model is told (in words) how long its response should be, so it attempts to wrap up naturally within the budget.
-
-### Implementation
-
-In `server.py`, after collecting the system prompt from the request:
+Inject a dynamic length instruction into the system prompt each request:
 
 ```python
-word_limit = int(max_tokens * 0.75)  # tokens → approximate words
+word_limit = int(max_tokens * 0.75)   # 1 token ≈ 0.75 words
 length_hint = f"\nKeep your response concise and complete within approximately {word_limit} words."
 system_instruction += length_hint
 ```
 
-### Token-to-Word Conversion
+Appended server-side (invisible to the user), dynamic with `max_tokens`, best-effort
+(small models may overshoot), with the hard cap as the safety net.
 
-Uses the standard English approximation: **1 token ≈ 0.75 words**.
-
-| max_tokens | word_limit in prompt |
-|-----------|---------------------|
-| 256       | ~192 words          |
-| 512       | ~384 words          |
-| 1024      | ~768 words          |
-| 2048      | ~1536 words         |
-
-### Behavior
-
-- The hint is appended server-side — the user doesn't see it in their system prompt field
-- It's dynamic: changes immediately when the user updates `max_tokens` in settings
-- It's a best-effort instruction — small models (4B) may still overshoot
-- The hard `max_tokens` cap remains as a safety net for when the model ignores the hint
-- Combined effect: fewer abrupt cutoffs because the model *tries* to finish within budget
+| max_tokens | word_limit |
+|-----------|-----------|
+| 256 | ~192 |
+| 512 | ~384 |
+| 1024 | ~768 |
+| 2048 | ~1536 |
 
 ### Limitations
 
-- Small models (4B) are unreliable at following length constraints
-- The model may produce shorter answers than necessary (over-constraining)
-- Code-heavy responses are harder to fit in word limits (code is dense)
-
----
-d, llm):
+- Small models (4B) are unreliable at following length constraints.
+- May over-constrain (shorter than needed).
+- Code-heavy responses are dense and harder to fit in a word budget.

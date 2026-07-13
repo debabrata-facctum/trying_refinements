@@ -1,6 +1,7 @@
 import os
 import gc
 import json
+import time
 import platform
 import uvicorn
 from fastapi import FastAPI, Request, HTTPException, Query
@@ -11,6 +12,10 @@ from pydantic import BaseModel
 from typing import List, Optional, Literal
 from context_manager import ContextManager
 from hardware_detector import run_detection, get_recommendation_for_ctx
+
+# Directory this file lives in — used for robust static file serving so the
+# server works no matter which directory it is launched from.
+BASE_DIR = os.path.abspath(os.path.dirname(__file__))
 
 app = FastAPI(title="Local LLM Server")
 
@@ -48,8 +53,87 @@ model_state = {
     "n_batch": 1024,
     "type_k": None,
     "type_v": None,
-    "status": "not_loaded"
+    "status": "not_loaded",
+    # Model specs read from the GGUF file at load time (None until a model loads)
+    "training_ctx": None,
+    "n_params": None,
+    "n_embd": None,
+    "n_vocab": None,
+    "file_size_bytes": None,
+    "desc": None,
 }
+
+
+def _first_ok(*getters):
+    """Return the first getter that yields a non-None value without raising."""
+    for get in getters:
+        try:
+            val = get()
+            if val is not None:
+                return val
+        except Exception:
+            pass
+    return None
+
+
+def extract_model_specs(model, path):
+    """Read intrinsic model specs from a loaded llama_cpp model.
+
+    Method names vary across llama-cpp-python versions, so every read is
+    attempted against both the high-level Llama object and its internal
+    `_model` handle, and failures fall back to None gracefully.
+    """
+    inner = getattr(model, "_model", None)
+    specs = {
+        "training_ctx": _first_ok(
+            lambda: model.n_ctx_train(),
+            lambda: inner.n_ctx_train(),
+        ),
+        "n_embd": _first_ok(
+            lambda: model.n_embd(),
+            lambda: inner.n_embd(),
+        ),
+        "n_vocab": _first_ok(
+            lambda: model.n_vocab(),
+            lambda: inner.n_vocab(),
+        ),
+        "n_params": _first_ok(
+            lambda: inner.n_params(),
+            lambda: model.n_params(),
+        ),
+        "desc": _first_ok(
+            lambda: inner.desc(),
+            lambda: model.desc(),
+        ),
+    }
+    # Model size: on-disk file size is the most reliable; fall back to the
+    # loaded tensor size if the file can't be stat'd.
+    try:
+        specs["file_size_bytes"] = os.path.getsize(path)
+    except Exception:
+        specs["file_size_bytes"] = _first_ok(
+            lambda: inner.size(),
+            lambda: model.size(),
+        )
+    return specs
+
+
+def count_tokens(text):
+    """Count tokens for a piece of text using the loaded model's tokenizer.
+
+    Falls back to a rough word-based estimate if no model is loaded or the
+    tokenizer fails for any reason.
+    """
+    if not text:
+        return 0
+    global llm
+    if llm is not None:
+        try:
+            return len(llm.tokenize(text.encode("utf-8"), add_bos=False))
+        except Exception:
+            pass
+    # Fallback heuristic: ~1.3 tokens per word
+    return max(1, int(len(text.split()) * 1.3))
 
 
 def load_model(path=None, n_ctx=2048, n_threads=6, n_gpu_layers=20,
@@ -116,7 +200,14 @@ def load_model(path=None, n_ctx=2048, n_threads=6, n_gpu_layers=20,
             "type_v": type_v,
             "status": "loaded"
         })
+        # Read intrinsic model specs from the GGUF and store them.
+        try:
+            model_state.update(extract_model_specs(llm, target_path))
+        except Exception as e:
+            print(f"WARNING: Could not read model specs: {e}")
         print("Model loaded successfully!")
+        specs_dbg = {k: model_state.get(k) for k in ("training_ctx", "n_params", "n_embd", "n_vocab", "file_size_bytes")}
+        print(f"  Specs: {specs_dbg}")
     except Exception as e:
         print(f"Failed to load model: {e}")
         model_state["status"] = "error"
@@ -164,7 +255,7 @@ class BrowseResponse(BaseModel):
 
 @app.get("/api/tags")
 async def get_tags():
-    """Mock endpoint to satisfy the connection check in script.js"""
+    """Mock endpoint to satisfy the connection check in the frontend"""
     print("DEBUG: Received request for /api/tags")
     return {"models": [{"name": "gemma-local-model"}]}
 
@@ -347,11 +438,20 @@ async def chat(chat_request: ChatRequest):
 
     # Process messages to handle system prompts and ensure validity
     raw_messages = [m.model_dump() for m in chat_request.messages]
+
+    # Capture the last user message text so we can report its token count.
+    last_user_text = ""
+    for msg in reversed(raw_messages):
+        if msg["role"] == "user":
+            last_user_text = msg["content"]
+            break
+    user_tokens = count_tokens(last_user_text)
+
     processed_messages = []
     max_tokens = chat_request.max_tokens or 512
-    
+
     system_instruction = None
-    
+
     for msg in raw_messages:
         if msg['role'] == 'system':
             if system_instruction is None:
@@ -368,7 +468,7 @@ async def chat(chat_request: ChatRequest):
         system_instruction += length_hint
     else:
         system_instruction = length_hint.strip()
-            
+
     # If we have a system prompt, prepend it to the first user message or handle it
     # Llama-cpp-python can be finicky with explicit 'system' roles depending on the model,
     # so merging into the first user message is a safe compatibility strategy.
@@ -378,10 +478,10 @@ async def chat(chat_request: ChatRequest):
         else:
             # If no user message starts, insert one (edge case)
             processed_messages.insert(0, {"role": "user", "content": system_instruction})
-            
+
     print(f"DEBUG: Processed {len(raw_messages)} raw messages into {len(processed_messages)} messages for inference.")
     stream = chat_request.stream
-    
+
     # Apply context management (trimming + optional summarization)
     n_ctx = model_state.get("n_ctx", 2048)
     processed_messages = ctx_manager.trim_messages(
@@ -397,6 +497,8 @@ async def chat(chat_request: ChatRequest):
         if stream:
             def generate():
                 print("DEBUG: Starting stream generation...")
+                started = time.perf_counter()
+                completion_text = ""
                 try:
                     response = llm.create_chat_completion(
                         messages=processed_messages,
@@ -410,7 +512,9 @@ async def chat(chat_request: ChatRequest):
                     for chunk in response:
                         delta = chunk['choices'][0]['delta']
                         content = delta.get('content', '')
-                        
+                        if content:
+                            completion_text += content
+
                         yield json.dumps({
                             "message": {
                                 "content": content
@@ -420,13 +524,23 @@ async def chat(chat_request: ChatRequest):
                 except Exception as e:
                     print(f"ERROR: Stream generation error: {e}")
                     yield json.dumps({"error": str(e), "done": True}) + "\n"
-                
-                yield json.dumps({"done": True}) + "\n"
-                print("DEBUG: Stream generation complete.")
+                    return
+
+                elapsed = max(time.perf_counter() - started, 1e-6)
+                completion_tokens = count_tokens(completion_text)
+                stats = {
+                    "user_tokens": user_tokens,
+                    "completion_tokens": completion_tokens,
+                    "elapsed_s": round(elapsed, 2),
+                    "tokens_per_s": round(completion_tokens / elapsed, 2),
+                }
+                yield json.dumps({"done": True, "stats": stats}) + "\n"
+                print(f"DEBUG: Stream generation complete. stats={stats}")
 
             return StreamingResponse(generate(), media_type="application/x-ndjson")
         else:
             print("DEBUG: Starting non-stream generation...")
+            started = time.perf_counter()
             response = llm.create_chat_completion(
                 messages=processed_messages,
                 max_tokens=max_tokens,
@@ -437,12 +551,20 @@ async def chat(chat_request: ChatRequest):
                 stream=False
             )
             content = response['choices'][0]['message']['content']
+            elapsed = max(time.perf_counter() - started, 1e-6)
+            completion_tokens = count_tokens(content)
             print("DEBUG: Generation complete.")
             return {
                 "message": {
                     "content": content
                 },
-                "done": True
+                "done": True,
+                "stats": {
+                    "user_tokens": user_tokens,
+                    "completion_tokens": completion_tokens,
+                    "elapsed_s": round(elapsed, 2),
+                    "tokens_per_s": round(completion_tokens / elapsed, 2),
+                }
             }
 
     except Exception as e:
@@ -454,17 +576,16 @@ async def chat(chat_request: ChatRequest):
 @app.get("/")
 async def serve_index():
     print("DEBUG: Serving index.html")
-    return FileResponse("index.html")
+    return FileResponse(os.path.join(BASE_DIR, "index.html"))
 
 @app.get("/{file_path:path}")
 async def serve_static(file_path: str):
     # Only serve files from the same directory as server.py
     ALLOWED_EXTENSIONS = {".js", ".css", ".html", ".ico", ".png", ".svg"}
-    base_dir = os.path.abspath(os.path.dirname(__file__))
-    requested = os.path.abspath(os.path.join(base_dir, file_path))
+    requested = os.path.abspath(os.path.join(BASE_DIR, file_path))
 
-    # Block path traversal: file must be inside base_dir
-    if not requested.startswith(base_dir):
+    # Block path traversal: file must be inside BASE_DIR
+    if not requested.startswith(BASE_DIR):
         raise HTTPException(status_code=403, detail="Access denied")
 
     ext = os.path.splitext(requested)[1].lower()
