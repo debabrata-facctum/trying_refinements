@@ -1,10 +1,21 @@
+<div align="center">
+
+<img src="./assets/localmind.svg" alt="LocalMind" width="380">
+
 # LocalMind — v2.0
+
+**Private, local LLM chat for GGUF models — your machine, your models, your data.**
+
+![Status](https://img.shields.io/badge/status-active-brightgreen) ![Python](https://img.shields.io/badge/python-3.10%2B-blue) ![UI](https://img.shields.io/badge/ui-v2-8a63d2) ![License](https://img.shields.io/badge/license-GPLv3-blue)
+
+</div>
+
+---
+
 
 A private, local chat interface for running GGUF language models on your own machine. No cloud, no API keys, no data leaving your computer.
 
 Built with **FastAPI** + **llama-cpp-python** on the backend and a redesigned **llama.cpp-style** dark frontend.
-
-![Status](https://img.shields.io/badge/status-active-brightgreen) ![Python](https://img.shields.io/badge/python-3.10%2B-blue) ![UI](https://img.shields.io/badge/ui-v2-8a63d2) ![License](https://img.shields.io/badge/license-GPLv3-blue)
 
 > **This is the v2 UI.** The engine (FastAPI + llama-cpp-python), hardware detection, and context management are unchanged from v1 — the front end was rebuilt around a sidebar + composer layout, and a few backend additions were made to feed the new UI (per-turn token stats and model-spec introspection). See [What changed in v2](#what-changed-in-v2) and [logic.md](./logic.md) for the full breakdown.
 
@@ -338,4 +349,4 @@ LocalMind is not affiliated with or endorsed by the llama.cpp project. llama.cpp
 
 ## License
 
-Licensed under the [GNU General Public License v3.0](../web_refinements/LICENSE). Derivative work must remain open-source under the same license.
+Licensed under the [GNU General Public License v3.0](./LICENSE). Derivative work must remain open-source under the same license.
