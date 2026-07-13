@@ -332,7 +332,7 @@ Set **GPU Layers** to `0` for CPU-only inference.
 
 The v2 interface is an independent, from-scratch reimplementation whose **visual design is heavily inspired by the web UI bundled with [llama.cpp](https://github.com/ggml-org/llama.cpp)'s `llama-server`**. The layout, dark theme, composer, and settings patterns take strong cues from that interface; the HTML/CSS/JS here were written for this project rather than copied.
 
-LocalMind is not affiliated with or endorsed by the llama.cpp project. llama.cpp is distributed under the MIT License; this project builds on [`llama-cpp-python`](https://github.com/abetlen/llama-cpp-python) for inference. Markdown rendering uses [marked](https://github.com/markedjs/marked) and syntax highlighting uses [highlight.js](https://github.com/highlightjs/highlight.js).
+LocalMind is not affiliated with or endorsed by the llama.cpp project. llama.cpp is distributed under the MIT License; this project builds on [`llama-cpp-python`] for inference. Markdown rendering uses [marked](https://github.com/markedjs/marked) and syntax highlighting uses [highlight.js](https://github.com/highlightjs/highlight.js).
 
 ---
 
