@@ -219,14 +219,14 @@ All configurable from the **Settings overlay** (General + Sampling tabs). Settin
 | 🐧 Linux (NVIDIA GPU) | ngl=-1, same as above |
 | 🍏 macOS (Apple Silicon) | ngl=99, batch=512, mlock=on, no numa |
 | 🍏 macOS (Intel) | ngl=0, batch=512, mlock=on, no numa |
-| ⚙️ Custom | All fields editable — auto-selected when you change any field |
+| ⚙️ Custom | All fields edit able — auto-selected when you change any field |
 
 ### Model / Hardware / Inference
 
 | Parameter | Default | Range | Purpose |
 |-----------|---------|-------|---------|
 | **Model Path** | — | Any `.gguf` file | Model to load (via file browser) |
-| **n_ctx** | 2048 | 128 – 32768 | Context window |
+| **n_ctx** | 2048 | 128 – 32768 \* | Context window |
 | **n_gpu_layers** | 0 (auto) | -1 – 999 | GPU layer offloading |
 | **n_threads** | auto | 1 – 64 | CPU threads |
 | **n_batch** | 1024 (512 Mac) | 32 – 4096 | Tokens per forward pass |
@@ -234,13 +234,18 @@ All configurable from the **Settings overlay** (General + Sampling tabs). Settin
 | **Memory Lock** | ON | ON/OFF | Lock model in RAM |
 | **NUMA** | ON (Win/Linux) | ON/OFF | NUMA-aware scheduling |
 | **KV Quantization** | Off | Off / q8_0 | Quantize KV-cache (~40% memory saved) |
-| **Max Response Tokens** | 512 | 64 – 4096 | Response length cap |
-| **Temperature** | 0.7 | 0.0 – 2.0 | Randomness |
+| **Max Response Tokens** | 512 | 64 – 4096 \* | Response length cap |
+| **Temperature** | 0.7 | 0.0 – 1.0 | Randomness |
 | **Top P** | 0.9 | 0.05 – 1.0 | Nucleus sampling |
 | **Top K** | 40 | 1 – 100 | Hard candidate limit |
 | **Repeat Penalty** | 1.1 | 1.0 – 2.0 | Repetition control |
 | **Summarize old context** | OFF | ON/OFF | Rolling summarization |
 | **System Prompt** | "You are a helpful AI assistant." | Any text | Model behavior |
+
+> **\*** These are limits set by the settings UI, not hard limits of the model or engine — the server passes whatever value it's given straight to llama-cpp-python.
+>
+> - **`n_ctx` (capped at 32768):** Many models are trained for far larger contexts (128k+), so the *model* would accept more. The cap is a safety rail because context memory grows fast — roughly +0.5–1 GB of RAM/VRAM per doubling — and large windows can crash or thrash typical machines. Raise it only if your model was trained for it *and* you have the memory to spare.
+> - **Max Response Tokens (capped at 4096):** The model can generate more, but response tokens are *reserved out of the context budget* (`input budget = n_ctx − max_tokens`). 4096 is already a very long single answer (~3,000 words); capping it prevents one response from starving the conversation history.
 
 > The deep explanations of `n_ctx`, `n_threads`, `n_gpu_layers`, and the sampling parameters (temperature, top-p, top-k, repeat penalty) from the v1 README still apply verbatim — the semantics didn't change, only where they live in the UI.
 
