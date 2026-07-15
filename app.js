@@ -32,6 +32,8 @@ document.addEventListener('DOMContentLoaded', () => {
     const ctxBarFill = document.getElementById('ctx-bar-fill');
     const ctxArc = document.getElementById('ctx-arc');
     const ctxCircle = document.getElementById('ctxBtn');
+    const ctxPctUsed = document.getElementById('ctx-pct-used');
+    const ctxPctFree = document.getElementById('ctx-pct-free');
     const RING_CIRCUMFERENCE = 2 * Math.PI * 9; // r=9 in the 24x24 viewBox
 
     // ---- Settings inputs ----
@@ -708,6 +710,8 @@ document.addEventListener('DOMContentLoaded', () => {
             // No model loaded — report 0 / 0 rather than a default context size.
             if (ctxVal) ctxVal.textContent = '0 / 0';
             if (ctxBarFill) ctxBarFill.style.width = '0%';
+            if (ctxPctUsed) ctxPctUsed.textContent = '—';
+            if (ctxPctFree) ctxPctFree.textContent = '—';
             if (ctxArc) {
                 ctxArc.style.strokeDasharray = `${RING_CIRCUMFERENCE}`;
                 ctxArc.style.strokeDashoffset = `${RING_CIRCUMFERENCE}`;
@@ -721,6 +725,10 @@ document.addEventListener('DOMContentLoaded', () => {
 
         if (ctxVal) ctxVal.textContent = `${used.toLocaleString()} / ${formatK(total)}`;
         if (ctxBarFill) ctxBarFill.style.width = pct + '%';
+
+        const usedPct = Math.round(pct);
+        if (ctxPctUsed) ctxPctUsed.textContent = `${usedPct}% used`;
+        if (ctxPctFree) ctxPctFree.textContent = `${100 - usedPct}% free`;
 
         if (ctxArc) {
             ctxArc.style.strokeDasharray = `${RING_CIRCUMFERENCE}`;

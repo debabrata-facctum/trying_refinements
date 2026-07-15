@@ -59,9 +59,10 @@
       <div class="composer">
         <!-- context popover (opens from the context circle) -->
         <div class="popover hidden" id="ctxPop">
-          <div class="p-head"><span>Context</span><span class="val" id="ctx-val">0 / 2K</span></div>
+          <div class="p-head"><span>Context</span><span class="val" id="ctx-val">0 / 0</span></div>
           <div class="p-desc">Approximate context usage for the loaded model.</div>
           <div class="ctx-bar"><span id="ctx-bar-fill" style="width:0%"></span></div>
+          <div class="ctx-pct"><span id="ctx-pct-used">—</span><span id="ctx-pct-free">—</span></div>
         </div>
 
         <div class="gen-indicator">
@@ -317,6 +318,6 @@
 <!-- ============ Toast ============ -->
 <div class="toast" id="toast" role="status" aria-live="polite"></div>
 
-<script src="app.js?v=1.5"></script>
+<script src="app.js?v=1.6"></script>
 </body>
 </html>

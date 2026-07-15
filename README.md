@@ -44,7 +44,7 @@ The v2 UI is a full re-skin plus a set of live-feedback features. Nothing from v
 
 ### Live feedback
 - **End-of-answer stats** — every user message shows its **token count**; every model answer shows **tokens generated**, **elapsed time**, and **tokens/sec**, with a model badge pill. Counts come from the model's real tokenizer, not an estimate.
-- **Context-usage meter** — the ring + popover in the composer show real `used / n_ctx` token usage (tokenizer-based), turning amber past 75% and red past 90%. Shows `0 / 0` when no model is loaded.
+- **Context-usage meter** — the ring + popover in the composer show real `used / n_ctx` token usage (tokenizer-based), turning amber past 75% and red past 90%. Clicking the ring opens a popover with a usage bar and a **% used / % free** breakdown. Shows `0 / 0` (and "—" percentages) when no model is loaded.
 - **Three-state connection dot** — green "Model loaded", amber "No model loaded" (server reachable, nothing loaded), red "Disconnected".
 - **Model Information card** — opened from the model pill. Shows **model specs read from the GGUF file** (parameters, model size, training context, embedding size, vocabulary size) alongside the runtime config it was loaded with. Everything reads "—" until a model is actually loaded.
 - **Copy toast** — copying a user or model message shows a small "Copied" confirmation.

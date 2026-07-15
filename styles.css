@@ -658,6 +658,13 @@ textarea.input { resize: vertical; min-height: 96px; }
 }
 .browser-error { color: var(--danger); }
 
+/* ---------------- Context usage percentages ---------------- */
+.ctx-pct {
+  display: flex; justify-content: space-between; align-items: center;
+  margin-top: 8px; font-size: 12px; color: var(--text-muted);
+}
+.ctx-pct #ctx-pct-free { color: var(--text-dim); }
+
 /* ---------------- Context ring (real progress) ---------------- */
 .ctx-circle svg { width: 20px; height: 20px; transform: rotate(-90deg); }
 .ctx-circle .ring-track { fill: none; stroke: var(--border); stroke-width: 2.6; }
