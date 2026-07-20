@@ -482,16 +482,11 @@ async def chat(chat_request: ChatRequest):
     print(f"DEBUG: Processed {len(raw_messages)} raw messages into {len(processed_messages)} messages for inference.")
     stream = chat_request.stream
 
-    # Apply context management (trimming + optional summarization)
+    # Context management (trimming + optional summarization).
+    # For streaming, this runs *inside* the generator so we can tell the client
+    # when a slow summarization pass is happening.
     n_ctx = model_state.get("n_ctx", 2048)
-    processed_messages = ctx_manager.trim_messages(
-        messages=processed_messages,
-        n_ctx=n_ctx,
-        max_tokens=max_tokens,
-        summarize_enabled=chat_request.summarize or False,
-        llm=llm
-    )
-    print(f"DEBUG: After context trimming: {len(processed_messages)} messages for inference.")
+    summarize_enabled = chat_request.summarize or False
 
     try:
         if stream:
@@ -500,8 +495,28 @@ async def chat(chat_request: ChatRequest):
                 started = time.perf_counter()
                 completion_text = ""
                 try:
-                    response = llm.create_chat_completion(
+                    # Signal a summarization pass before doing the blocking work.
+                    doing_summary = ctx_manager.will_summarize(
+                        processed_messages, n_ctx, max_tokens, summarize_enabled, llm
+                    )
+                    if doing_summary:
+                        print("DEBUG: Summarization pass starting...")
+                        yield json.dumps({"status": "summarizing", "done": False}) + "\n"
+
+                    final_messages = ctx_manager.trim_messages(
                         messages=processed_messages,
+                        n_ctx=n_ctx,
+                        max_tokens=max_tokens,
+                        summarize_enabled=summarize_enabled,
+                        llm=llm,
+                    )
+                    print(f"DEBUG: After context trimming: {len(final_messages)} messages for inference.")
+
+                    if doing_summary:
+                        yield json.dumps({"status": "generating", "done": False}) + "\n"
+
+                    response = llm.create_chat_completion(
+                        messages=final_messages,
                         max_tokens=max_tokens,
                         temperature=temperature,
                         top_p=top_p,
@@ -540,9 +555,17 @@ async def chat(chat_request: ChatRequest):
             return StreamingResponse(generate(), media_type="application/x-ndjson")
         else:
             print("DEBUG: Starting non-stream generation...")
+            final_messages = ctx_manager.trim_messages(
+                messages=processed_messages,
+                n_ctx=n_ctx,
+                max_tokens=max_tokens,
+                summarize_enabled=summarize_enabled,
+                llm=llm,
+            )
+            print(f"DEBUG: After context trimming: {len(final_messages)} messages for inference.")
             started = time.perf_counter()
             response = llm.create_chat_completion(
-                messages=processed_messages,
+                messages=final_messages,
                 max_tokens=max_tokens,
                 temperature=temperature,
                 top_p=top_p,

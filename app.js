@@ -10,6 +10,7 @@ document.addEventListener('DOMContentLoaded', () => {
     const connWrap = document.getElementById('conn-wrap');
     const connText = document.getElementById('conn-text');
     const modelPillName = document.getElementById('model-pill-name');
+    const genText = document.getElementById('gen-text');
 
     // ---- Sidebar / nav ----
     const collapseBtn = document.getElementById('collapseBtn');
@@ -519,6 +520,13 @@ document.addEventListener('DOMContentLoaded', () => {
                     if (!line.trim()) continue;
                     try {
                         const json = JSON.parse(line);
+                        if (json.status === 'summarizing') {
+                            setAssistantGhost(aiEl, 'Summarizing earlier messages to free up context…');
+                            if (genText) genText.textContent = 'Summarizing…';
+                        } else if (json.status === 'generating') {
+                            setAssistantGhost(aiEl, 'Thinking…');
+                            if (genText) genText.textContent = 'Generating…';
+                        }
                         if (json.message && json.message.content) {
                             aiResponseText += json.message.content;
                             updateMessage(aiEl, aiResponseText);
@@ -557,6 +565,7 @@ document.addEventListener('DOMContentLoaded', () => {
             }
         } finally {
             app.classList.remove('generating');
+            if (genText) genText.textContent = 'Generating…';
             abortController = null;
             userInput.focus();
         }
@@ -607,6 +616,16 @@ document.addEventListener('DOMContentLoaded', () => {
         body.classList.remove('loading');
         body.innerHTML = marked.parse(text);
         highlight(body);
+        scrollToBottom();
+    }
+
+    // Show a transient status line (e.g. "Summarizing…") in the assistant bubble
+    // before real content starts streaming in.
+    function setAssistantGhost(el, text) {
+        const body = el.querySelector('.md-body');
+        if (!body) return;
+        body.classList.add('loading');
+        body.textContent = text;
         scrollToBottom();
     }
 

@@ -43,15 +43,34 @@ class ContextManager:
 
         # Determine mode
         if n_ctx < 3000 or not summarize_enabled:
-            return self._sliding_window(messages, message_tokens, budget)
+            result = self._sliding_window(messages, message_tokens, budget)
         else:
-            return self._summarize_and_protect(messages, message_tokens, budget, n_ctx, llm)
+            result = self._summarize_and_protect(messages, message_tokens, budget, n_ctx, llm)
+
+        # Guarantee strictly alternating roles before handing off to the model.
+        return self._enforce_alternation(result)
 
     def _count_tokens(self, text, llm):
         """Count tokens for a string using the model's tokenizer."""
         if not text:
             return 0
         return len(llm.tokenize(text.encode("utf-8")))
+
+    def will_summarize(self, messages, n_ctx, max_tokens, summarize_enabled, llm):
+        """Predict whether trim_messages() will run a summarization pass.
+
+        Lets the server notify the client that a (slow) summary is starting,
+        before the blocking work happens. Mirrors the decision logic in
+        trim_messages() without doing any summarization itself.
+        """
+        if not summarize_enabled or n_ctx < 3000 or len(messages) <= 2:
+            return False
+        budget = n_ctx - max_tokens
+        threshold = int(budget * 0.75)
+        total = 0
+        for msg in messages:
+            total += self._count_tokens(msg["content"], llm)
+        return total > threshold
 
     def _sliding_window(self, messages, message_tokens, budget):
         """
@@ -215,6 +234,26 @@ class ContextManager:
             return min(300, budget // 10)
         else:
             return budget // 10
+
+    def _enforce_alternation(self, messages):
+        """Merge consecutive same-role messages so roles strictly alternate.
+
+        llama.cpp chat templates (Llama, Mistral, Gemma, etc.) require the
+        conversation to alternate user/assistant/user/... Trimming and summary
+        injection can leave two messages with the same role in a row (e.g. the
+        first user message followed by the summary user message). This collapses
+        any such runs by concatenating their content, producing a valid
+        alternating sequence that still begins with 'user'.
+        """
+        if not messages:
+            return messages
+        merged = [dict(messages[0])]
+        for msg in messages[1:]:
+            if msg["role"] == merged[-1]["role"]:
+                merged[-1]["content"] = f"{merged[-1]['content']}\n\n{msg['content']}"
+            else:
+                merged.append(dict(msg))
+        return merged
 
     def reset(self):
         """Clear summary cache (called when user starts new chat)."""

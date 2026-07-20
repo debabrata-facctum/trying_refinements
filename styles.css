@@ -534,7 +534,8 @@ textarea.input { resize: vertical; min-height: 96px; }
   padding: 1px 5px; border-radius: 5px;
 }
 .md-body pre code.hljs { background: transparent; }
-.md-body.loading { color: var(--text-muted); }
+.md-body.loading { color: var(--text-muted); font-style: italic; animation: ghostPulse 1.5s ease-in-out infinite; }
+@keyframes ghostPulse { 0%, 100% { opacity: .55; } 50% { opacity: 1; } }
 
 /* user bubble should preserve line breaks */
 .bubble { white-space: pre-wrap; word-break: break-word; }
