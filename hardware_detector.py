@@ -4,10 +4,9 @@ Hardware Detector for LocalMind.
 Cross-platform auto-detection of CPU, RAM, GPU capabilities.
 Produces llama-cpp-python-specific recommended parameters.
 
-Layered fallback approach:
-  Layer A: Python libs (psutil, py-cpuinfo)
-  Layer B: OS native commands (wmic, /proc, sysctl, nvidia-smi)
-  Layer C: Safe defaults
+Detection approach:
+  CPU / RAM: psutil + py-cpuinfo (pinned dependencies), stdlib safety net.
+  GPU:       OS-native probes (nvidia-smi, system_profiler) — no Python lib covers this.
 
 Supported platforms: Windows, Linux, macOS (Intel + Apple Silicon)
 """
@@ -88,170 +87,65 @@ PROFILES = {
 
 
 # ---------------------------------------------------------------------------
-# CPU Detection
+# CPU Detection (psutil + py-cpuinfo, stdlib fallback)
 # ---------------------------------------------------------------------------
 
-def _cpu_via_psutil() -> Optional[Dict[str, Any]]:
-    """Layer A: psutil for core counts."""
+def detect_cpu() -> Dict[str, Any]:
+    """
+    Detect CPU core counts, brand and instruction flags.
+
+    psutil and py-cpuinfo are pinned dependencies; if either is somehow
+    unavailable we fall back to the stdlib (logical cores only).
+    """
+    system = platform.system()
+
+    # Core counts via psutil, stdlib as the safety net.
+    logical = physical = None
     try:
         import psutil
         logical = psutil.cpu_count(logical=True)
         physical = psutil.cpu_count(logical=False)
-        if logical is None and physical is None:
-            return None
-        return {
-            "logical_cores": logical or physical,
-            "physical_cores": physical or logical,
-            "source": "psutil",
-        }
     except ImportError:
-        return None
+        pass
 
-
-def _cpu_via_cpuinfo() -> Optional[Dict[str, Any]]:
-    """Layer A: py-cpuinfo for brand + instruction flags."""
-    try:
-        import cpuinfo
-        info = cpuinfo.get_cpu_info()
-        flags = info.get("flags", [])
-        return {
-            "brand": info.get("brand_raw", "unknown"),
-            "flags": flags,
-            "has_avx": "avx" in flags,
-            "has_avx2": "avx2" in flags,
-            "has_avx512": any("avx512" in f for f in flags),
-            "has_fma": "fma" in flags,
-            "has_f16c": "f16c" in flags,
-            "source": "py-cpuinfo",
-        }
-    except ImportError:
-        return None
-    except Exception:
-        return None
-
-
-def _cpu_via_wmic() -> Optional[Dict[str, Any]]:
-    """Layer B (Windows): wmic for physical core count."""
-    try:
-        result = subprocess.check_output(
-            ["wmic", "cpu", "get", "NumberOfCores", "/value"],
-            timeout=10, stderr=subprocess.DEVNULL,
-        ).decode("utf-8", errors="ignore").strip()
-        # Parse "NumberOfCores=6"
-        for line in result.split("\n"):
-            line = line.strip()
-            if line.startswith("NumberOfCores="):
-                cores = int(line.split("=")[1])
-                return {"physical_cores": cores, "source": "wmic"}
-        return None
-    except (subprocess.SubprocessError, FileNotFoundError, ValueError, IndexError):
-        return None
-
-
-def _cpu_via_proc() -> Optional[Dict[str, Any]]:
-    """Layer B (Linux): /proc/cpuinfo for physical core count."""
-    try:
-        with open("/proc/cpuinfo", "r") as f:
-            physical_ids = set()
-            core_ids = set()
-            for line in f:
-                if line.startswith("physical id"):
-                    physical_ids.add(line.strip())
-                elif line.startswith("core id"):
-                    core_ids.add(line.strip())
-            # Number of unique core ids = physical cores (per socket)
-            # This is an approximation for single-socket systems
-            physical = len(core_ids) if core_ids else None
-            return {"physical_cores": physical, "source": "/proc/cpuinfo"}
-    except (FileNotFoundError, PermissionError):
-        return None
-
-
-def _cpu_via_sysctl() -> Optional[Dict[str, Any]]:
-    """Layer B (macOS): sysctl for core counts."""
-    try:
-        logical = subprocess.check_output(
-            ["sysctl", "-n", "hw.logicalcpu"],
-            timeout=5, stderr=subprocess.DEVNULL,
-        ).decode("utf-8").strip()
-        physical = subprocess.check_output(
-            ["sysctl", "-n", "hw.physicalcpu"],
-            timeout=5, stderr=subprocess.DEVNULL,
-        ).decode("utf-8").strip()
-        return {
-            "logical_cores": int(logical),
-            "physical_cores": int(physical),
-            "source": "sysctl",
-        }
-    except (subprocess.SubprocessError, FileNotFoundError, ValueError):
-        return None
-
-
-def _cpu_stdlib() -> Dict[str, Any]:
-    """Layer C: stdlib fallback (logical cores only)."""
-    count = os.cpu_count() or multiprocessing.cpu_count()
-    return {
-        "logical_cores": count or 4,
-        "physical_cores": None,
-        "source": "os.cpu_count",
+    info: Dict[str, Any] = {
+        "logical_cores": logical or os.cpu_count() or multiprocessing.cpu_count() or 4,
+        "physical_cores": physical or logical,
     }
 
+    # Brand + instruction flags via py-cpuinfo, platform.processor() as fallback.
+    try:
+        import cpuinfo
+        cpu = cpuinfo.get_cpu_info()
+        flags = cpu.get("flags", [])
+        info["brand"] = cpu.get("brand_raw", "unknown")
+        info["has_avx"] = "avx" in flags
+        info["has_avx2"] = "avx2" in flags
+        info["has_avx512"] = any("avx512" in f for f in flags)
+        info["has_fma"] = "fma" in flags
+        info["has_f16c"] = "f16c" in flags
+    except Exception:
+        info["brand"] = platform.processor() or "unknown"
+        info["has_avx"] = None
+        info["has_avx2"] = None
+        info["has_avx512"] = None
+        info["has_fma"] = None
+        info["has_f16c"] = None
 
-def detect_cpu() -> Dict[str, Any]:
-    """
-    Full CPU detection waterfall.
-    Returns: logical_cores, physical_cores, brand, instruction flags.
-    """
-    system = platform.system()
-
-    # Core counts: psutil → OS-specific → stdlib
-    core_info = _cpu_via_psutil()
-    if core_info is None:
-        if system == "Windows":
-            core_info = _cpu_via_wmic()
-        elif system == "Linux":
-            core_info = _cpu_via_proc()
-        elif system == "Darwin":
-            core_info = _cpu_via_sysctl()
-
-    if core_info is None:
-        core_info = _cpu_stdlib()
-
-    # Ensure logical_cores is always present
-    if "logical_cores" not in core_info or core_info["logical_cores"] is None:
-        core_info["logical_cores"] = os.cpu_count() or 4
-
-    # Brand + flags: py-cpuinfo → platform.processor() fallback
-    flag_info = _cpu_via_cpuinfo()
-    if flag_info:
-        core_info["brand"] = flag_info["brand"]
-        core_info["has_avx"] = flag_info["has_avx"]
-        core_info["has_avx2"] = flag_info["has_avx2"]
-        core_info["has_avx512"] = flag_info["has_avx512"]
-        core_info["has_fma"] = flag_info["has_fma"]
-        core_info["has_f16c"] = flag_info["has_f16c"]
-    else:
-        core_info["brand"] = platform.processor() or "unknown"
-        core_info["has_avx"] = None
-        core_info["has_avx2"] = None
-        core_info["has_avx512"] = None
-        core_info["has_fma"] = None
-        core_info["has_f16c"] = None
-
-    core_info["architecture"] = platform.machine() or "unknown"
-    core_info["is_apple_silicon"] = (
-        system == "Darwin" and core_info["architecture"] == "arm64"
+    info["architecture"] = platform.machine() or "unknown"
+    info["is_apple_silicon"] = (
+        system == "Darwin" and info["architecture"] == "arm64"
     )
 
-    return core_info
+    return info
 
 
 # ---------------------------------------------------------------------------
-# RAM Detection
+# RAM Detection (psutil, safe default fallback)
 # ---------------------------------------------------------------------------
 
-def _ram_via_psutil() -> Optional[Dict[str, Any]]:
-    """Layer A: psutil for RAM."""
+def detect_ram() -> Dict[str, Any]:
+    """Detect total/available RAM via psutil, with an 8 GB safe default."""
     try:
         import psutil
         mem = psutil.virtual_memory()
@@ -264,94 +158,7 @@ def _ram_via_psutil() -> Optional[Dict[str, Any]]:
             "source": "psutil",
         }
     except ImportError:
-        return None
-
-
-def _ram_via_proc() -> Optional[Dict[str, Any]]:
-    """Layer B (Linux): /proc/meminfo."""
-    try:
-        total_kb = None
-        available_kb = None
-        with open("/proc/meminfo", "r") as f:
-            for line in f:
-                if line.startswith("MemTotal:"):
-                    total_kb = int(line.split()[1])
-                elif line.startswith("MemAvailable:"):
-                    available_kb = int(line.split()[1])
-        if total_kb is None:
-            return None
-        result = {
-            "total_bytes": total_kb * 1024,
-            "total_gb": round(total_kb / (1024 ** 2), 2),
-            "available_bytes": available_kb * 1024 if available_kb else None,
-            "available_gb": round(available_kb / (1024 ** 2), 2) if available_kb else None,
-            "percent_used": None,
-            "source": "/proc/meminfo",
-        }
-        return result
-    except (FileNotFoundError, PermissionError, ValueError):
-        return None
-
-
-def _ram_via_sysctl() -> Optional[Dict[str, Any]]:
-    """Layer B (macOS): sysctl for total RAM."""
-    try:
-        raw = subprocess.check_output(
-            ["sysctl", "-n", "hw.memsize"],
-            timeout=5, stderr=subprocess.DEVNULL,
-        ).decode("utf-8").strip()
-        total = int(raw)
         return {
-            "total_bytes": total,
-            "total_gb": round(total / (1024 ** 3), 2),
-            "available_bytes": None,
-            "available_gb": None,
-            "percent_used": None,
-            "source": "sysctl",
-        }
-    except (subprocess.SubprocessError, FileNotFoundError, ValueError):
-        return None
-
-
-def _ram_via_wmic() -> Optional[Dict[str, Any]]:
-    """Layer B (Windows): wmic for total RAM."""
-    try:
-        result = subprocess.check_output(
-            ["wmic", "computersystem", "get", "TotalPhysicalMemory", "/value"],
-            timeout=10, stderr=subprocess.DEVNULL,
-        ).decode("utf-8", errors="ignore").strip()
-        for line in result.split("\n"):
-            line = line.strip()
-            if line.startswith("TotalPhysicalMemory="):
-                total = int(line.split("=")[1])
-                return {
-                    "total_bytes": total,
-                    "total_gb": round(total / (1024 ** 3), 2),
-                    "available_bytes": None,
-                    "available_gb": None,
-                    "percent_used": None,
-                    "source": "wmic",
-                }
-        return None
-    except (subprocess.SubprocessError, FileNotFoundError, ValueError, IndexError):
-        return None
-
-
-def detect_ram() -> Dict[str, Any]:
-    """Full RAM detection waterfall."""
-    system = platform.system()
-
-    info = _ram_via_psutil()
-    if info is None:
-        if system == "Linux":
-            info = _ram_via_proc()
-        elif system == "Darwin":
-            info = _ram_via_sysctl()
-        elif system == "Windows":
-            info = _ram_via_wmic()
-
-    if info is None:
-        info = {
             "total_bytes": 8 * (1024 ** 3),
             "total_gb": 8.0,
             "available_bytes": None,
@@ -360,15 +167,13 @@ def detect_ram() -> Dict[str, Any]:
             "source": "safe_default",
         }
 
-    return info
-
 
 # ---------------------------------------------------------------------------
-# GPU Detection
+# GPU Detection (OS-native probes — no Python lib covers this)
 # ---------------------------------------------------------------------------
 
 def _gpu_nvidia_detect() -> Optional[Dict[str, Any]]:
-    """Layer B: Check for NVIDIA GPU via nvidia-smi."""
+    """Check for NVIDIA GPU via nvidia-smi."""
     try:
         result = subprocess.check_output(
             ["nvidia-smi", "--query-gpu=name,memory.total",
@@ -398,7 +203,7 @@ def _gpu_nvidia_detect() -> Optional[Dict[str, Any]]:
 
 
 def _gpu_apple_detect() -> Optional[Dict[str, Any]]:
-    """Layer B (macOS): Detect Apple Silicon GPU via system_profiler."""
+    """Detect Apple Silicon GPU via system_profiler (macOS arm64 only)."""
     if platform.system() != "Darwin":
         return None
     if platform.machine() != "arm64":
@@ -644,29 +449,6 @@ def run_detection() -> Dict[str, Any]:
     }
 
     return _cached_detection
-
-
-def get_recommendation_for_ctx(n_ctx: int) -> Dict[str, Any]:
-    """
-    Re-calculate recommendation with a specific n_ctx value.
-    Used when user changes context window — may toggle KV quantization.
-    """
-    detection = run_detection()
-
-    # Re-run recommendation with the new n_ctx
-    cpu_info = {
-        "physical_cores": detection["hardware"]["physical_cores"],
-        "logical_cores": detection["hardware"]["logical_cores"],
-        "is_apple_silicon": detection["hardware"]["is_apple_silicon"],
-    }
-    ram_info = {
-        "total_gb": detection["hardware"]["ram_total_gb"],
-        "available_gb": detection["hardware"]["ram_available_gb"],
-    }
-    gpu_info = detection["hardware"]["gpu"]
-
-    rec = build_recommendation(cpu_info, ram_info, gpu_info, n_ctx=n_ctx)
-    return rec["recommended"]
 
 
 # ---------------------------------------------------------------------------

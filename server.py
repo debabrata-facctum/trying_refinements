@@ -4,14 +4,15 @@ import json
 import time
 import platform
 import uvicorn
-from fastapi import FastAPI, Request, HTTPException, Query
-from fastapi.responses import JSONResponse, StreamingResponse, FileResponse
+from fastapi import FastAPI, HTTPException, Query
+from fastapi.responses import StreamingResponse
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
 from llama_cpp import Llama
 from pydantic import BaseModel
 from typing import List, Optional, Literal
 from context_manager import ContextManager
-from hardware_detector import run_detection, get_recommendation_for_ctx
+from hardware_detector import run_detection
 
 # Directory this file lives in — used for robust static file serving so the
 # server works no matter which directory it is launched from.
@@ -27,13 +28,6 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
-
-@app.middleware("http")
-async def log_requests(request: Request, call_next):
-    print(f"DEBUG: Incoming {request.method} request to {request.url.path}")
-    response = await call_next(request)
-    print(f"DEBUG: Response status: {response.status_code}")
-    return response
 
 # Global model instance
 llm = None
@@ -256,7 +250,6 @@ class BrowseResponse(BaseModel):
 @app.get("/api/tags")
 async def get_tags():
     """Mock endpoint to satisfy the connection check in the frontend"""
-    print("DEBUG: Received request for /api/tags")
     return {"models": [{"name": "gemma-local-model"}]}
 
 @app.get("/api/browse", response_model=BrowseResponse)
@@ -422,19 +415,19 @@ async def reset_context():
 
 @app.post("/api/chat")
 async def chat(chat_request: ChatRequest):
-    print(f"DEBUG: Received chat request: {chat_request}")
     global llm
     if llm is None:
         load_model()
         if llm is None:
-            print("ERROR: Model failed to load")
             raise HTTPException(status_code=500, detail="Model not configured or not found. Check server.py")
 
-    # Extract inference parameters
-    temperature = chat_request.temperature if chat_request.temperature is not None else 0.7
-    top_p = chat_request.top_p if chat_request.top_p is not None else 0.9
-    top_k = chat_request.top_k if chat_request.top_k is not None else 40
-    repeat_penalty = chat_request.repeat_penalty if chat_request.repeat_penalty is not None else 1.1
+    # Sampling parameters, with sensible defaults if the client omits them.
+    sampling = {
+        "temperature": chat_request.temperature if chat_request.temperature is not None else 0.7,
+        "top_p": chat_request.top_p if chat_request.top_p is not None else 0.9,
+        "top_k": chat_request.top_k if chat_request.top_k is not None else 40,
+        "repeat_penalty": chat_request.repeat_penalty if chat_request.repeat_penalty is not None else 1.1,
+    }
 
     # Process messages to handle system prompts and ensure validity
     raw_messages = [m.model_dump() for m in chat_request.messages]
@@ -479,7 +472,6 @@ async def chat(chat_request: ChatRequest):
             # If no user message starts, insert one (edge case)
             processed_messages.insert(0, {"role": "user", "content": system_instruction})
 
-    print(f"DEBUG: Processed {len(raw_messages)} raw messages into {len(processed_messages)} messages for inference.")
     stream = chat_request.stream
 
     # Context management (trimming + optional summarization).
@@ -488,10 +480,19 @@ async def chat(chat_request: ChatRequest):
     n_ctx = model_state.get("n_ctx", 2048)
     summarize_enabled = chat_request.summarize or False
 
+    def run_trim():
+        """Trim/summarize the conversation to fit the context budget."""
+        return ctx_manager.trim_messages(
+            messages=processed_messages,
+            n_ctx=n_ctx,
+            max_tokens=max_tokens,
+            summarize_enabled=summarize_enabled,
+            llm=llm,
+        )
+
     try:
         if stream:
             def generate():
-                print("DEBUG: Starting stream generation...")
                 started = time.perf_counter()
                 completion_text = ""
                 try:
@@ -500,17 +501,9 @@ async def chat(chat_request: ChatRequest):
                         processed_messages, n_ctx, max_tokens, summarize_enabled, llm
                     )
                     if doing_summary:
-                        print("DEBUG: Summarization pass starting...")
                         yield json.dumps({"status": "summarizing", "done": False}) + "\n"
 
-                    final_messages = ctx_manager.trim_messages(
-                        messages=processed_messages,
-                        n_ctx=n_ctx,
-                        max_tokens=max_tokens,
-                        summarize_enabled=summarize_enabled,
-                        llm=llm,
-                    )
-                    print(f"DEBUG: After context trimming: {len(final_messages)} messages for inference.")
+                    final_messages = run_trim()
 
                     if doing_summary:
                         yield json.dumps({"status": "generating", "done": False}) + "\n"
@@ -518,11 +511,8 @@ async def chat(chat_request: ChatRequest):
                     response = llm.create_chat_completion(
                         messages=final_messages,
                         max_tokens=max_tokens,
-                        temperature=temperature,
-                        top_p=top_p,
-                        top_k=top_k,
-                        repeat_penalty=repeat_penalty,
-                        stream=True
+                        stream=True,
+                        **sampling,
                     )
                     for chunk in response:
                         delta = chunk['choices'][0]['delta']
@@ -550,33 +540,20 @@ async def chat(chat_request: ChatRequest):
                     "tokens_per_s": round(completion_tokens / elapsed, 2),
                 }
                 yield json.dumps({"done": True, "stats": stats}) + "\n"
-                print(f"DEBUG: Stream generation complete. stats={stats}")
 
             return StreamingResponse(generate(), media_type="application/x-ndjson")
         else:
-            print("DEBUG: Starting non-stream generation...")
-            final_messages = ctx_manager.trim_messages(
-                messages=processed_messages,
-                n_ctx=n_ctx,
-                max_tokens=max_tokens,
-                summarize_enabled=summarize_enabled,
-                llm=llm,
-            )
-            print(f"DEBUG: After context trimming: {len(final_messages)} messages for inference.")
+            final_messages = run_trim()
             started = time.perf_counter()
             response = llm.create_chat_completion(
                 messages=final_messages,
                 max_tokens=max_tokens,
-                temperature=temperature,
-                top_p=top_p,
-                top_k=top_k,
-                repeat_penalty=repeat_penalty,
-                stream=False
+                stream=False,
+                **sampling,
             )
             content = response['choices'][0]['message']['content']
             elapsed = max(time.perf_counter() - started, 1e-6)
             completion_tokens = count_tokens(content)
-            print("DEBUG: Generation complete.")
             return {
                 "message": {
                     "content": content
@@ -595,31 +572,10 @@ async def chat(chat_request: ChatRequest):
         raise HTTPException(status_code=500, detail=str(e))
 
 # --- Static File Serving ---
-
-@app.get("/")
-async def serve_index():
-    print("DEBUG: Serving index.html")
-    return FileResponse(os.path.join(BASE_DIR, "index.html"))
-
-@app.get("/{file_path:path}")
-async def serve_static(file_path: str):
-    # Only serve files from the same directory as server.py
-    ALLOWED_EXTENSIONS = {".js", ".css", ".html", ".ico", ".png", ".svg"}
-    requested = os.path.abspath(os.path.join(BASE_DIR, file_path))
-
-    # Block path traversal: file must be inside BASE_DIR
-    if not requested.startswith(BASE_DIR):
-        raise HTTPException(status_code=403, detail="Access denied")
-
-    ext = os.path.splitext(requested)[1].lower()
-    if ext not in ALLOWED_EXTENSIONS:
-        raise HTTPException(status_code=403, detail="File type not allowed")
-
-    if os.path.exists(requested) and os.path.isfile(requested):
-        return FileResponse(requested)
-
-    print(f"DEBUG: File not found: {file_path}")
-    raise HTTPException(status_code=404)
+# Serve index.html at "/" and all static assets from BASE_DIR. StaticFiles
+# handles path-traversal safety; this mount is registered after every API
+# route so the routes above always take precedence.
+app.mount("/", StaticFiles(directory=BASE_DIR, html=True), name="static")
 
 if __name__ == "__main__":
     print("Starting LocalMind server on http://localhost:8080")

@@ -48,7 +48,7 @@
       <div class="column" id="chat-column">
         <div class="empty" id="welcome">
           <h1>Hello there</h1>
-          <p>Type a message or load a model to get started</p>
+          <p>Load a model and start chatting — all local, all private.</p>
         </div>
         <!-- messages are appended here -->
       </div>
@@ -145,6 +145,7 @@
       <nav class="settings-nav">
         <button class="s-item active" data-page="general"><svg class="icon-sm icon" viewBox="0 0 24 24"><path d="M4 6h16M4 12h10M4 18h7"/></svg> General</button>
         <button class="s-item" data-page="sampling"><svg class="icon-sm icon" viewBox="0 0 24 24"><path d="M22 3H2l8 9v7l4 2v-9z"/></svg> Sampling</button>
+        <button class="s-item" data-page="export"><svg class="icon-sm icon" viewBox="0 0 24 24"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><path d="M7 10l5 5 5-5"/><path d="M12 15V3"/></svg> Export</button>
       </nav>
 
       <div class="settings-body">
@@ -289,6 +290,15 @@
           </div>
         </section>
 
+        <!-- EXPORT -->
+        <section class="settings-page hidden" data-content="export">
+          <div class="settings-subhead">Export Conversation</div>
+          <div class="field">
+            <button id="export-chat-btn" class="btn primary block">Export Chat (JSON)</button>
+            <div class="desc">Download the current conversation — messages plus per-turn token stats (tokens, elapsed time, tokens/sec) — as a JSON file.</div>
+          </div>
+        </section>
+
         <div class="settings-footer">
           <button id="reset-settings" class="btn ghost"><svg class="icon-sm icon" viewBox="0 0 24 24"><path d="M21 12a9 9 0 1 1-3-6.7L21 8"/><path d="M21 3v5h-5"/></svg> Reset to default</button>
           <button id="save-settings" class="btn primary">Save settings</button>
@@ -318,6 +328,6 @@
 <!-- ============ Toast ============ -->
 <div class="toast" id="toast" role="status" aria-live="polite"></div>
 
-<script src="app.js?v=1.7"></script>
+<script src="app.js?v=2.0"></script>
 </body>
 </html>
