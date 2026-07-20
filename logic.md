@@ -21,7 +21,7 @@ new live-feedback features. No v1 capability was removed.
 |------|----|----|
 | Page model | `index.html` + `script.js` + `style.css` | Single page: `index.html` + `app.js` + `styles.css` |
 | Layout | Header + centered chat + input bar | Sidebar (collapsible rail) + topbar + floating composer |
-| Settings | One large modal | In-app overlay with **General** + **Sampling** tabs |
+| Settings | One large modal | In-app overlay with **General** + **Sampling** + **Export** tabs |
 | Connection | Binary dot (reachable or not) | **Three-state** dot (loaded / no-model / disconnected) |
 | Per-turn info | None | **Token stats** per message (user + assistant) |
 | Context display | None | **Real-token usage ring** + popover |
@@ -60,13 +60,20 @@ toggle selector to `.field > label.toggle-label`.
 
 ### Settings as an overlay with tabs
 
-**Decision:** in-app overlay (not a separate page/route), with only **General** and
-**Sampling** tabs.
+**Decision:** in-app overlay (not a separate page/route), with **General**,
+**Sampling**, and **Export** tabs.
 
 **Reasoning:** the server serves a single `index.html`; an overlay keeps everything
-client-side with no reload. Import/Export and the "+" tools menu from the reference
-mock were intentionally dropped (no backend for them). Every v1 setting is folded
-into these two tabs so nothing is lost.
+client-side with no reload. The "+" tools menu from the reference mock was dropped
+(no backend for it). Every v1 setting is folded into the General/Sampling tabs so
+nothing is lost. **Export** was added later as a third tab — it needs no backend
+(the download is built entirely in the browser, see *Chat export* below), so it fits
+the client-side overlay model cleanly.
+
+Tab switching is generic: the nav buttons carry `data-page` and each panel a matching
+`data-content`; clicking a tab shows the panel whose `data-content` matches. The shared
+Reset/Save footer applies only to General/Sampling, so it's hidden when the Export tab
+is active (there's nothing to save there).
 
 ### Message rendering
 
@@ -183,11 +190,60 @@ was loaded with), and shows "—" for all of them until `status == "loaded"`.
 
 ## Static file serving (v2)
 
-`server.py` computes `BASE_DIR = os.path.abspath(os.path.dirname(__file__))` and serves
-`index.html` and static assets relative to it (v1 used a CWD-relative
-`FileResponse("index.html")`). This lets the server run correctly regardless of the
-directory it's launched from. Path-traversal protection (files must stay inside
-`BASE_DIR`) and the allowed-extension whitelist are retained.
+`server.py` computes `BASE_DIR = os.path.abspath(os.path.dirname(__file__))` and mounts
+FastAPI's `StaticFiles(directory=BASE_DIR, html=True)` at `/` to serve `index.html` and
+all static assets (v1 used a CWD-relative `FileResponse("index.html")`). This lets the
+server run correctly regardless of the directory it's launched from.
+
+**Why `StaticFiles` instead of hand-rolled routes:** an earlier v2 draft used a custom
+`/{file_path:path}` catch-all with manual path-traversal checks and an allowed-extension
+whitelist. `StaticFiles` already handles traversal safety, so the custom route was
+replaced with the one-line mount — less code, and a standard component readers can trust
+at a glance. The mount is registered **after** all `/api/*` routes, so those take
+precedence and only unmatched paths fall through to static serving.
+
+---
+
+## Chat export (v2)
+
+### Decision: client-side JSON, no backend
+
+The current conversation can be downloaded as a JSON file from the **Export** settings
+tab. There is deliberately **no server endpoint** for this — the conversation already
+lives in the browser (`state.history`), so export is built there with a `Blob` and a
+temporary `<a download>` click. No new route, no new dependency.
+
+This intentionally does *not* implement the full ConversationStore / ZIP-of-JSONL design
+in `docs/WEBUI_LOGIC.md` — that's a larger multi-conversation persistence feature. Export
+here is scoped to "save the conversation I'm looking at."
+
+### Data shape
+
+```json
+{
+  "app": "LocalMind",
+  "exported_at": "<ISO-8601>",
+  "model": "<model name or null>",
+  "system_prompt": "<text>",
+  "messages": [
+    { "role": "user",      "content": "…", "stats": { "tokens": 18 } },
+    { "role": "assistant", "content": "…", "stats": { "tokens": 42, "elapsed_s": 6.2, "tokens_per_s": 6.82 } }
+  ]
+}
+```
+
+### Implementation notes
+
+- **`buildExportObject()`** assembles the object above from `state.history` + session
+  state; **`exportChat()`** serializes it and triggers the download. They're split so the
+  data shape is easy to inspect/verify independently of the DOM/download.
+- **Stats capture:** each turn's stats are stored on the pushed `state.history` items
+  (`user` → `{tokens}`, `assistant` → `{tokens, elapsed_s, tokens_per_s}`) at the moment
+  they're rendered. The extra `stats` key is harmless to `/api/chat` — the server's
+  `ChatMessage` model ignores unknown fields.
+- **Empty guard:** exporting with no messages is a no-op that shows a "Nothing to export"
+  toast rather than downloading an empty file.
+- **Filename:** `localmind-chat-<timestamp>.json`.
 
 ---
 

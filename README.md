@@ -12,7 +12,6 @@
 
 ---
 
-
 A private, local chat interface for running GGUF language models on your own machine. No cloud, no API keys, no data leaving your computer.
 
 Built with **FastAPI** + **llama-cpp-python** on the backend and a redesigned **llama.cpp-style** dark frontend.
@@ -40,7 +39,7 @@ The v2 UI is a full re-skin plus a set of live-feedback features. Nothing from v
 - The sidebar **collapses into a narrow icon rail** (56px) instead of hiding — the wordmark becomes an **"LM"** monogram and the nav shrinks to icons. Toggled from the topbar.
 - **Topbar** with a three-state **connection indicator** (see below) and the sidebar toggle.
 - **Floating composer** pinned to the bottom, with a context-usage ring, a model pill, and a send button that flips to a **stop** control while generating.
-- **Settings moved into an in-app overlay** with two tabs — **General** (system message, endpoint, model config, hardware profile) and **Sampling** (temperature, top-p, top-k, repeat penalty, max tokens, summarize). No page reload, no separate settings page.
+- **Settings moved into an in-app overlay** with three tabs — **General** (system message, endpoint, model config, hardware profile), **Sampling** (temperature, top-p, top-k, repeat penalty, max tokens, summarize), and **Export** (download the current chat as JSON). No page reload, no separate settings page.
 
 ### Live feedback
 - **End-of-answer stats** — every user message shows its **token count**; every model answer shows **tokens generated**, **elapsed time**, and **tokens/sec**, with a model badge pill. Counts come from the model's real tokenizer, not an estimate.
@@ -50,10 +49,14 @@ The v2 UI is a full re-skin plus a set of live-feedback features. Nothing from v
 - **Copy toast** — copying a user or model message shows a small "Copied" confirmation.
 - **Edit** on a user message trims that message (and everything after it) from the chat and history and drops the text back into the composer to resend.
 
+### Data export
+- **Export tab** in Settings — downloads the current conversation as a JSON file (`localmind-chat-<timestamp>.json`). Fully client-side: the browser builds the file with `Blob` + a download link, no server endpoint and no dependency.
+- The export includes session metadata (`app`, `exported_at`, `model`, `system_prompt`) and every message with its **per-turn stats** (`tokens`, and for answers `elapsed_s` + `tokens_per_s`). Exporting an empty chat is a no-op with a "Nothing to export" toast.
+
 ### Backend additions (to feed the UI)
 - `/api/chat` now emits a final `stats` object: `{ user_tokens, completion_tokens, elapsed_s, tokens_per_s }` (in both streaming and non-streaming paths).
 - `/api/model-status` now includes GGUF-derived specs: `training_ctx`, `n_params`, `n_embd`, `n_vocab`, `file_size_bytes`, `desc` (all `null` until a model loads).
-- Static files are served from an absolute `BASE_DIR`, so the server runs correctly regardless of the working directory it's launched from.
+- Static files are served with FastAPI's `StaticFiles` mounted at `/` (rooted at an absolute `BASE_DIR`), so the server runs correctly regardless of the working directory it's launched from. The mount is registered after all API routes, so those take precedence.
 
 ### Files
 - v1 used `index.html` + `script.js` + `style.css` (multi-purpose page). v2 uses **`index.html` (single page)** + **`app.js`** + **`styles.css`**.
@@ -156,7 +159,7 @@ Many GGUF models are picky about the `system` role in chat messages. The server 
 
 ### Hardware auto-detection
 
-On startup, the server probes your system using a layered approach: `psutil` + `py-cpuinfo` first, then OS-native commands (`wmic`, `/proc`, `sysctl`, `nvidia-smi`), then safe defaults. Detection covers CPU cores/brand/flags (AVX2, AVX-512, FMA, F16C), RAM, GPU (NVIDIA / Apple Metal), and OS. Results are cached and served via `/api/hardware-profile`; the UI uses them to auto-select an optimization profile and pre-fill hardware settings.
+On startup, the server probes your system. CPU cores/brand/flags (AVX2, AVX-512, FMA, F16C) and RAM come from `psutil` + `py-cpuinfo` (both pinned dependencies), with the stdlib as a safety net. GPU detection uses OS-native probes (`nvidia-smi` for NVIDIA, `system_profiler` for Apple Metal) since no Python library covers it. Results are cached and served via `/api/hardware-profile`; the UI uses them to auto-select an optimization profile and pre-fill hardware settings.
 
 ### Streaming
 
@@ -219,7 +222,7 @@ All configurable from the **Settings overlay** (General + Sampling tabs). Settin
 | 🐧 Linux (NVIDIA GPU) | ngl=-1, same as above |
 | 🍏 macOS (Apple Silicon) | ngl=99, batch=512, mlock=on, no numa |
 | 🍏 macOS (Intel) | ngl=0, batch=512, mlock=on, no numa |
-| ⚙️ Custom | All fields edit able — auto-selected when you change any field |
+| ⚙️ Custom | All fields editable — auto-selected when you change any field |
 
 ### Model / Hardware / Inference
 
@@ -341,6 +344,7 @@ Set **GPU Layers** to `0` for CPU-only inference.
 - ~~Hardware auto-detection~~ ✅ (v1)
 - ~~Live token stats + real context-usage meter~~ ✅ (v2)
 - ~~Model spec introspection from GGUF~~ ✅ (v2)
+- ~~Export the current conversation as JSON~~ ✅ (v2)
 
 ---
 
@@ -348,10 +352,10 @@ Set **GPU Layers** to `0` for CPU-only inference.
 
 The v2 interface is an independent, from-scratch reimplementation whose **visual design is heavily inspired by the web UI bundled with [llama.cpp](https://github.com/ggml-org/llama.cpp)'s `llama-server`**. The layout, dark theme, composer, and settings patterns take strong cues from that interface; the HTML/CSS/JS here were written for this project rather than copied.
 
-LocalMind is not affiliated with or endorsed by the llama.cpp project. llama.cpp is distributed under the MIT License; this project builds on [`llama-cpp-python`] for inference. Markdown rendering uses [marked](https://github.com/markedjs/marked) and syntax highlighting uses [highlight.js](https://github.com/highlightjs/highlight.js).
+LocalMind is not affiliated with or endorsed by the llama.cpp project. llama.cpp is distributed under the MIT License; this project builds on [`llama-cpp-python`](https://github.com/abetlen/llama-cpp-python) for inference. Markdown rendering uses [marked](https://github.com/markedjs/marked) and syntax highlighting uses [highlight.js](https://github.com/highlightjs/highlight.js).
 
 ---
 
 ## License
 
-Licensed under the [GNU General Public License v3.0](./LICENSE). Derivative work must remain open-source under the same license.
+Licensed under the [GNU General Public License v3.0](../web_refinements/LICENSE). Derivative work must remain open-source under the same license.
