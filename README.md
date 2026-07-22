@@ -6,7 +6,7 @@
 
 **Private, local LLM chat for GGUF models — your machine, your models, your data.**
 
-![Status](https://img.shields.io/badge/status-active-brightgreen) ![Python](https://img.shields.io/badge/python-3.10%2B-blue) ![License](https://img.shields.io/badge/license-GPLv3-blue)
+![Status](https://img.shields.io/badge/status-active-brightgreen) ![Python](https://img.shields.io/badge/python-3.10%2B-blue) ![License](https://img.shields.io/badge/license-MIT-blue)
 
 <!-- Hero screenshot: capture the main chat view mid-conversation (sidebar expanded,
      a reply with a code block, per-message token stats, and the composer context ring),
@@ -310,4 +310,4 @@ LocalMind is not affiliated with or endorsed by the llama.cpp project. llama.cpp
 
 ## License
 
-Licensed under the [GNU General Public License v3.0](../web_refinements/LICENSE). Derivative work must remain open-source under the same license.
+Licensed under the [MIT License](./LICENSE) — free to use, modify, and distribute (including in closed-source projects), as long as the copyright notice is retained.
