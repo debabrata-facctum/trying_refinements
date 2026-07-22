@@ -2,21 +2,20 @@
 
 <img src="./assets/localmind.svg" alt="LocalMind" width="380">
 
-# LocalMind — v2.0
+# LocalMind
 
 **Private, local LLM chat for GGUF models — your machine, your models, your data.**
 
-![Status](https://img.shields.io/badge/status-active-brightgreen) ![Python](https://img.shields.io/badge/python-3.10%2B-blue) ![UI](https://img.shields.io/badge/ui-v2-8a63d2) ![License](https://img.shields.io/badge/license-GPLv3-blue)
+![Status](https://img.shields.io/badge/status-active-brightgreen) ![Python](https://img.shields.io/badge/python-3.10%2B-blue) ![License](https://img.shields.io/badge/license-GPLv3-blue)
+
+<!-- Hero screenshot: capture the main chat view mid-conversation (sidebar expanded,
+     a reply with a code block, per-message token stats, and the composer context ring),
+     then save it as assets/screenshot.png so it renders here. -->
+<img src="./assets/screenshot.png" alt="LocalMind chat interface" width="700">
 
 </div>
 
----
-
-A private, local chat interface for running GGUF language models on your own machine. No cloud, no API keys, no data leaving your computer.
-
-Built with **FastAPI** + **llama-cpp-python** on the backend and a redesigned **llama.cpp-style** dark frontend.
-
-> **This is the v2 UI.** The engine (FastAPI + llama-cpp-python), hardware detection, and context management are unchanged from v1 — the front end was rebuilt around a sidebar + composer layout, and a few backend additions were made to feed the new UI (per-turn token stats and model-spec introspection). See [What changed in v2](#what-changed-in-v2) and [logic.md](./logic.md) for the full breakdown.
+A private, local chat interface for running GGUF language models on your own machine. No cloud, no API keys, no data leaving your computer. Built with **FastAPI** + **llama-cpp-python** and a **llama.cpp-style** dark UI.
 
 ---
 
@@ -24,40 +23,19 @@ Built with **FastAPI** + **llama-cpp-python** on the backend and a redesigned **
 
 Most local LLM tools (Ollama, text-generation-webui, LM Studio) hide the model configuration behind abstractions. You get a chat box, but no direct control over how the model actually runs on your hardware. Worse — they use generic default settings that leave performance on the table. Your CPU's instruction sets, your RAM capacity, your GPU's VRAM — none of it is leveraged unless you dig through CLI flags or config files.
 
-LocalMind gives you that control, without requiring you to be an expert.
-
-**The core idea:** a lightweight chat UI that **auto-detects your hardware** and applies platform-optimized inference settings out of the box — then lets you fine-tune every parameter visually if you want to. Flash attention, memory locking, NUMA-aware scheduling, KV-cache quantization, batch sizing — all exposed and tunable from a single settings panel.
+LocalMind gives you that control, without requiring you to be an expert. It **auto-detects your hardware** and applies platform-optimized inference settings out of the box — then lets you fine-tune every parameter visually if you want to. Flash attention, memory locking, NUMA-aware scheduling, KV-cache quantization, batch sizing — all exposed and tunable from a single settings panel.
 
 ---
 
-## What changed in v2
+## Features
 
-The v2 UI is a full re-skin plus a set of live-feedback features. Nothing from v1 was removed — every setting and endpoint still exists.
-
-### Layout & navigation
-- **Sidebar** with the LocalMind wordmark and a **New chat** / **Settings** nav.
-- The sidebar **collapses into a narrow icon rail** (56px) instead of hiding — the wordmark becomes an **"LM"** monogram and the nav shrinks to icons. Toggled from the topbar.
-- **Topbar** with a three-state **connection indicator** (see below) and the sidebar toggle.
-- **Floating composer** pinned to the bottom, with a context-usage ring, a model pill, and a send button that flips to a **stop** control while generating.
-- **Settings moved into an in-app overlay** with three tabs — **General** (system message, endpoint, model config, hardware profile), **Sampling** (temperature, top-p, top-k, repeat penalty, max tokens, summarize), and **Export** (download the current chat as JSON). No page reload, no separate settings page.
-
-### Live feedback
-- **End-of-answer stats** — every user message shows its **token count**; every model answer shows **tokens generated**, **elapsed time**, and **tokens/sec**, with a model badge pill. Counts come from the model's real tokenizer, not an estimate.
-- **Context-usage meter** — the ring + popover in the composer show real `used / n_ctx` token usage (tokenizer-based), turning amber past 75% and red past 90%. Clicking the ring opens a popover with a usage bar and a **% used / % free** breakdown. Shows `0 / 0` (and "—" percentages) when no model is loaded.
-- **Three-state connection dot** — green "Model loaded", amber "No model loaded" (server reachable, nothing loaded), red "Disconnected".
-- **Model Information card** — opened from the model pill. Shows **model specs read from the GGUF file** (parameters, model size, training context, embedding size, vocabulary size) alongside the runtime config it was loaded with. Everything reads "—" until a model is actually loaded.
-
-### Data export
-- **Export tab** in Settings — downloads the current conversation as a JSON file (`localmind-chat-<timestamp>.json`). Fully client-side: the browser builds the file with `Blob` + a download link, no server endpoint and no dependency.
-- The export includes session metadata (`app`, `exported_at`, `model`, `system_prompt`) and every message with its **per-turn stats** (`tokens`, and for answers `elapsed_s` + `tokens_per_s`). Exporting an empty chat is a no-op with a "Nothing to export" toast.
-
-### Backend additions (to feed the UI)
-- `/api/chat` now emits a final `stats` object: `{ user_tokens, completion_tokens, elapsed_s, tokens_per_s }` (in both streaming and non-streaming paths).
-- `/api/model-status` now includes GGUF-derived specs: `training_ctx`, `n_params`, `n_embd`, `n_vocab`, `file_size_bytes`, `desc` (all `null` until a model loads).
-- Static files are served with FastAPI's `StaticFiles` mounted at `/` (rooted at an absolute `BASE_DIR`), so the server runs correctly regardless of the working directory it's launched from. The mount is registered after all API routes, so those take precedence.
-
-### Files
-- v1 used `index.html` + `script.js` + `style.css` (multi-purpose page). v2 uses **`index.html` (single page)** + **`app.js`** + **`styles.css`**.
+- 🔒 **Fully local & private** — models run on your machine; nothing is sent anywhere.
+- 🎛️ **Hardware auto-detection** — detects CPU, RAM, and GPU on startup and picks a platform-optimized profile, with every parameter still editable.
+- 📊 **Live telemetry** — real per-message token counts, generation speed (tokens/sec), and a `used / n_ctx` context-usage meter, all from the model's real tokenizer.
+- 🔍 **GGUF introspection** — reads model specs (parameters, size, training context, embedding & vocab size) straight from the file.
+- 🧠 **Automatic context management** — sliding window by default, with optional rolling summarization for long chats.
+- 💾 **Export conversations** — download the current chat as JSON, including per-turn stats.
+- ✨ **Rich streaming** — markdown + syntax-highlighted code, rendered as it streams.
 
 ---
 
@@ -72,7 +50,7 @@ pip install -r requirements.txt
 <details>
 <summary><strong>Platform-specific notes for llama-cpp-python</strong></summary>
 
-`llama-cpp-python` compiles C++ code during install and can be tricky to set up depending on your OS and hardware (CPU vs GPU). See the v1 project's **[INSTALL_LLAMA_CPP.md](./INSTALL_LLAMA_CPP.md)** for the full installation guide covering Windows, Linux, and macOS with both CPU and GPU builds.
+`llama-cpp-python` compiles C++ code during install and can be tricky to set up depending on your OS and hardware (CPU vs GPU). See **[INSTALL_LLAMA_CPP.md](./INSTALL_LLAMA_CPP.md)** for the full installation guide covering Windows, Linux, and macOS with both CPU and GPU builds.
 
 </details>
 
@@ -120,9 +98,9 @@ Browser (localhost:8080)                 FastAPI Server (server.py)
 │  • Context-usage ring      │           │                              │
 │                            │           │  /api/browse                 │
 │  Settings overlay          │ ───────►  │  • List dirs + .gguf         │
-│  • General / Sampling tabs │           │                              │
-│  • Hardware profile        │ ───────►  │  /api/load-model             │
-│                            │           │  • Hot-swap + read specs     │
+│  • General / Sampling /    │           │                              │
+│    Export tabs             │ ───────►  │  /api/load-model             │
+│  • Hardware profile        │           │  • Hot-swap + read specs     │
 │  Model Info modal          │ ◄───────  │  /api/model-status           │
 │  • GGUF specs + runtime    │           │  • state + GGUF specs        │
 └───────────────────────────┘           └──────────────┬───────────────┘
@@ -136,16 +114,16 @@ Browser (localhost:8080)                 FastAPI Server (server.py)
                                          └──────────────────────────────┘
 ```
 
-### End-of-answer stats
+### Streaming & stats
 
-The chat stream ends with a `stats` object computed on the server:
+Responses stream as newline-delimited JSON (`application/x-ndjson`). The front end renders markdown in real time with `marked.js` and highlights code with `highlight.js`. The stream ends with a `stats` object computed on the server:
 
 - `user_tokens` — tokens in the last user message (real tokenizer)
 - `completion_tokens` — tokens generated in the answer
 - `elapsed_s` — wall-clock generation time
 - `tokens_per_s` — throughput
 
-The front end renders these under each message and accumulates `user_tokens + completion_tokens` across the conversation to drive the context-usage ring.
+The UI renders these under each message and accumulates them across the conversation to drive the context-usage ring.
 
 ### Model spec introspection
 
@@ -157,23 +135,7 @@ Many GGUF models are picky about the `system` role in chat messages. The server 
 
 ### Hardware auto-detection
 
-On startup, the server probes your system. CPU cores/brand/flags (AVX2, AVX-512, FMA, F16C) and RAM come from `psutil` + `py-cpuinfo` (both pinned dependencies), with the stdlib as a safety net. GPU detection uses OS-native probes (`nvidia-smi` for NVIDIA, `system_profiler` for Apple Metal) since no Python library covers it. Results are cached and served via `/api/hardware-profile`; the UI uses them to auto-select an optimization profile and pre-fill hardware settings.
-
-### Streaming
-
-Responses stream as newline-delimited JSON (`application/x-ndjson`):
-
-```json
-{"message": {"content": "partial token"}, "done": false}
-```
-
-Final signal (v2 adds `stats`):
-
-```json
-{"done": true, "stats": {"user_tokens": 18, "completion_tokens": 42, "elapsed_s": 6.2, "tokens_per_s": 6.82}}
-```
-
-The front end renders markdown in real time with `marked.js` and highlights code with `highlight.js`.
+On startup, the server probes your system. CPU cores/brand/flags (AVX2, AVX-512, FMA, F16C) and RAM come from `psutil` + `py-cpuinfo`, with the stdlib as a safety net. GPU detection uses OS-native probes (`nvidia-smi` for NVIDIA, `system_profiler` for Apple Metal) since no Python library covers it. Results are cached and served via `/api/hardware-profile`; the UI uses them to auto-select an optimization profile and pre-fill hardware settings.
 
 ---
 
@@ -208,7 +170,7 @@ The protected zone is a **token budget** (30% of input budget), not a fixed mess
 
 ## Settings & Parameters
 
-All configurable from the **Settings overlay** (General + Sampling tabs). Settings persist in `localStorage` and survive refreshes.
+All configurable from the **Settings overlay** (General, Sampling, and Export tabs). Settings persist in `localStorage` and survive refreshes.
 
 ### Hardware Profile (Auto-Detected)
 
@@ -248,8 +210,6 @@ All configurable from the **Settings overlay** (General + Sampling tabs). Settin
 > - **`n_ctx` (capped at 32768):** Many models are trained for far larger contexts (128k+), so the *model* would accept more. The cap is a safety rail because context memory grows fast — roughly +0.5–1 GB of RAM/VRAM per doubling — and large windows can crash or thrash typical machines. Raise it only if your model was trained for it *and* you have the memory to spare.
 > - **Max Response Tokens (capped at 4096):** The model can generate more, but response tokens are *reserved out of the context budget* (`input budget = n_ctx − max_tokens`). 4096 is already a very long single answer (~3,000 words); capping it prevents one response from starving the conversation history.
 
-> The deep explanations of `n_ctx`, `n_threads`, `n_gpu_layers`, and the sampling parameters (temperature, top-p, top-k, repeat penalty) from the v1 README still apply verbatim — the semantics didn't change, only where they live in the UI.
-
 ---
 
 ## API Endpoints
@@ -260,12 +220,12 @@ All configurable from the **Settings overlay** (General + Sampling tabs). Settin
 | `GET` | `/api/browse?path=` | Browse filesystem for `.gguf` files |
 | `GET` | `/api/hardware-profile` | Auto-detected hardware info + recommended settings |
 | `POST` | `/api/load-model` | Load a model with given parameters |
-| `GET` | `/api/model-status` | Current model state + **GGUF specs** (v2) |
-| `POST` | `/api/chat` | Send messages, receive inference response + **stats** (v2) |
+| `GET` | `/api/model-status` | Current model state + GGUF specs |
+| `POST` | `/api/chat` | Send messages, receive inference response + stats |
 | `POST` | `/api/reset-context` | Clear the summary cache (used by **New chat**) |
 
 <details>
-<summary><strong>Example: POST /api/chat response (final chunk, v2)</strong></summary>
+<summary><strong>Example: POST /api/chat response (final chunk)</strong></summary>
 
 ```json
 {"done": true, "stats": {"user_tokens": 18, "completion_tokens": 42, "elapsed_s": 6.2, "tokens_per_s": 6.82}}
@@ -274,7 +234,7 @@ All configurable from the **Settings overlay** (General + Sampling tabs). Settin
 </details>
 
 <details>
-<summary><strong>Example: GET /api/model-status (v2 fields)</strong></summary>
+<summary><strong>Example: GET /api/model-status</strong></summary>
 
 ```json
 {
@@ -294,19 +254,17 @@ All configurable from the **Settings overlay** (General + Sampling tabs). Settin
 ## Project Structure
 
 ```
-web_ui_refinements/
+LocalMind/
 ├── server.py             # FastAPI backend — routing, model loading, chat, stats, specs
-├── context_manager.py    # Context trimming + optional summarization (unchanged from v1)
-├── hardware_detector.py  # Cross-platform hardware detection (unchanged from v1)
-├── index.html            # Single-page v2 UI: sidebar, composer, overlays, modals
+├── context_manager.py    # Context trimming + optional summarization
+├── hardware_detector.py  # Cross-platform hardware detection
+├── index.html            # Single-page UI: sidebar, composer, overlays, modals
 ├── app.js                # Frontend logic — streaming, stats, settings, model mgmt, UI
 ├── styles.css            # llama.cpp-style dark theme (design tokens)
+├── assets/               # Logo and screenshots
 ├── requirements.txt      # Python dependencies (pinned)
-├── logic.md              # v2 design docs (this UI's decisions)
 └── README.md             # This file
 ```
-
-> Static assets are referenced with a `?v=` cache-busting query (e.g. `app.js?v=1.5`). Bump it when you change `app.js`/`styles.css` so browsers pick up the new version. `index.html` itself isn't versioned — do a hard reload (Ctrl+F5) once after an HTML change.
 
 ---
 
@@ -339,16 +297,12 @@ Set **GPU Layers** to `0` for CPU-only inference.
 
 - Conversation persistence (multi-chat history in the sidebar)
 - Bundle `marked` / `highlight.js` locally for true offline use (currently CDN)
-- ~~Hardware auto-detection~~ ✅ (v1)
-- ~~Live token stats + real context-usage meter~~ ✅ (v2)
-- ~~Model spec introspection from GGUF~~ ✅ (v2)
-- ~~Export the current conversation as JSON~~ ✅ (v2)
 
 ---
 
 ## Acknowledgments
 
-The v2 interface is an independent, from-scratch reimplementation whose **visual design is heavily inspired by the web UI bundled with [llama.cpp](https://github.com/ggml-org/llama.cpp)'s `llama-server`**. The layout, dark theme, composer, and settings patterns take strong cues from that interface; the HTML/CSS/JS here were written for this project rather than copied.
+LocalMind's **visual design is heavily inspired by the web UI bundled with [llama.cpp](https://github.com/ggml-org/llama.cpp)'s `llama-server`**. The layout, dark theme, composer, and settings patterns take strong cues from that interface; the HTML/CSS/JS here were written from scratch for this project rather than copied.
 
 LocalMind is not affiliated with or endorsed by the llama.cpp project. llama.cpp is distributed under the MIT License; this project builds on [`llama-cpp-python`](https://github.com/abetlen/llama-cpp-python) for inference. Markdown rendering uses [marked](https://github.com/markedjs/marked) and syntax highlighting uses [highlight.js](https://github.com/highlightjs/highlight.js).
 
